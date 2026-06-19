@@ -1,17 +1,29 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
+type ProposalClient = {
+  name: string;
+  city: string | null;
+  state: string | null;
+};
+
 type ProposalRow = {
   id: string;
   proposal_number: string | null;
   issue_date: string;
   status: string;
   total: number;
-  clients: {
-    name: string;
-    city: string | null;
-    state: string | null;
-  } | null;
+  clients: ProposalClient | null;
+};
+
+type SupabaseProposalRow = Omit<ProposalRow, "clients"> & {
+  clients: ProposalClient | ProposalClient[] | null;
+};
+
+type PdfResponse = {
+  fileName?: string;
+  fileUrl?: string;
+  error?: string;
 };
 
 const statusOptions = [
@@ -23,11 +35,30 @@ const statusOptions = [
   { value: "completed", label: "Concluída" },
 ];
 
+function getApiUrl() {
+  const envApiUrl = import.meta.env.VITE_API_URL;
+
+  if (envApiUrl) {
+    return String(envApiUrl).replace(/\/$/, "");
+  }
+
+  if (window.location.hostname === "localhost") {
+    return "http://localhost:3333";
+  }
+
+  return "";
+}
+
+function formatCurrency(value: number) {
+  return Number(value).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
 export function ProposalsPage() {
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [loadingPdfId, setLoadingPdfId] = useState<string | null>(null);
-
-  const apiUrl = import.meta.env.VITE_API_URL;
 
   async function loadProposals() {
     const { data, error } = await supabase
@@ -49,19 +80,21 @@ export function ProposalsPage() {
       .order("created_at", { ascending: false });
 
     if (error) {
-      console.error(error);
-      alert("Erro ao carregar propostas.");
+      console.error("Erro ao carregar propostas:", error);
+      alert(`Erro ao carregar propostas: ${error.message}`);
       return;
     }
 
-    const normalizedData = (data ?? []).map((proposal) => ({
+    const normalizedData = (
+      (data ?? []) as unknown as SupabaseProposalRow[]
+    ).map((proposal) => ({
       ...proposal,
       clients: Array.isArray(proposal.clients)
         ? proposal.clients[0] ?? null
         : proposal.clients ?? null,
     }));
 
-    setProposals(normalizedData as unknown as ProposalRow[]);
+    setProposals(normalizedData);
   }
 
   useEffect(() => {
@@ -78,15 +111,17 @@ export function ProposalsPage() {
       .eq("id", proposalId);
 
     if (error) {
-      console.error(error);
-      alert("Erro ao atualizar status.");
+      console.error("Erro ao atualizar status:", error);
+      alert(`Erro ao atualizar status: ${error.message}`);
       return;
     }
 
-    loadProposals();
+    await loadProposals();
   }
 
   async function generatePdf(proposalId: string) {
+    const apiUrl = getApiUrl();
+
     if (!apiUrl) {
       alert("VITE_API_URL não configurada.");
       return;
@@ -99,42 +134,48 @@ export function ProposalsPage() {
         `${apiUrl}/proposals/${proposalId}/generate-pdf`,
         {
           method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({}),
         },
       );
 
-      const result = await response.json();
+      const contentType = response.headers.get("content-type");
+
+      const result: PdfResponse = contentType?.includes("application/json")
+        ? await response.json()
+        : { error: await response.text() };
 
       if (!response.ok) {
-        console.error(result);
+        console.error("Erro ao gerar PDF:", result);
         alert(result.error ?? "Erro ao gerar PDF.");
         return;
       }
 
-      window.open(result.fileUrl, "_blank");
+      if (!result.fileUrl) {
+        console.error("Backend não retornou fileUrl:", result);
+        alert("PDF gerado, mas o backend não retornou o link do arquivo.");
+        return;
+      }
+
+      window.open(result.fileUrl, "_blank", "noopener,noreferrer");
     } catch (error) {
-      console.error(error);
+      console.error("Erro de conexão com o backend:", error);
       alert("Erro de conexão com o backend.");
     } finally {
       setLoadingPdfId(null);
     }
   }
 
-  function formatCurrency(value: number) {
-    return Number(value).toLocaleString("pt-BR", {
-      style: "currency",
-      currency: "BRL",
-    });
-  }
-
   return (
     <div>
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-3xl font-bold">Propostas</h2>
-          <p className="mt-2 text-neutral-600">
-            Histórico de orçamentos gerados pelo sistema.
-          </p>
-        </div>
+      <div>
+        <h2 className="text-3xl font-bold">Propostas</h2>
+        <p className="mt-2 text-neutral-600">
+          Histórico de orçamentos gerados pelo sistema.
+        </p>
       </div>
 
       <div className="mt-8 overflow-hidden rounded-2xl bg-white shadow-sm">
@@ -156,9 +197,14 @@ export function ProposalsPage() {
                 <td className="p-4">{proposal.proposal_number}</td>
 
                 <td className="p-4">
-                  <strong>{proposal.clients?.name}</strong>
+                  <strong>
+                    {proposal.clients?.name ?? "Cliente não localizado"}
+                  </strong>
                   <p className="text-neutral-500">
-                    {proposal.clients?.city}/{proposal.clients?.state}
+                    {proposal.clients?.city ?? "-"}
+                    {proposal.clients?.state
+                      ? `/${proposal.clients.state}`
+                      : ""}
                   </p>
                 </td>
 

@@ -6,8 +6,14 @@ import { chromium } from "playwright";
 
 const app = Fastify({ logger: true });
 
-app.register(cors, {
+app.addContentTypeParser("*", { parseAs: "string" }, (_request, body, done) => {
+  done(null, body);
+});
+
+await app.register(cors, {
   origin: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
 });
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -26,19 +32,29 @@ function formatCurrency(value: number) {
   });
 }
 
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function buildProposalHtml(payload: any) {
   const { proposal, client, items } = payload;
 
-  const year = new Date(proposal.issue_date).getFullYear();
+  const issueDate = new Date(proposal.issue_date);
+  const year = issueDate.getFullYear();
 
   const rows = items
     .map(
       (item: any) => `
       <tr>
-        <td>${item.service_name}</td>
-        <td>${item.description}</td>
+        <td>${escapeHtml(item.service_name)}</td>
+        <td>${escapeHtml(item.description)}</td>
         <td class="center">${Number(item.quantity)}</td>
-        <td class="right">${formatCurrency(item.unit_price)}</td>
+        <td class="right">${formatCurrency(Number(item.unit_price))}</td>
       </tr>
     `,
     )
@@ -67,13 +83,15 @@ function buildProposalHtml(payload: any) {
 
     .page {
       width: 210mm;
-      height: 297mm;
+      min-height: 297mm;
       padding: 22mm;
       page-break-after: always;
       position: relative;
+      overflow: hidden;
     }
 
     .cover {
+      height: 297mm;
       background: #1f1f1f;
       color: white;
       border-top: 18mm solid #f6aa00;
@@ -191,13 +209,13 @@ function buildProposalHtml(payload: any) {
     .total-box {
       margin-top: 22mm;
       margin-left: auto;
-      width: 85mm;
+      width: 95mm;
       background: #f2f2f2;
       padding: 12px;
       text-align: right;
       font-size: 16px;
       font-weight: 900;
-      letter-spacing: 2px;
+      letter-spacing: 1px;
     }
 
     .footer {
@@ -213,6 +231,7 @@ function buildProposalHtml(payload: any) {
     }
 
     .payment {
+      height: 297mm;
       background: #1f1f1f;
       color: white;
       border-top: 18mm solid #f6aa00;
@@ -265,15 +284,18 @@ function buildProposalHtml(payload: any) {
     }
   </style>
 </head>
+
 <body>
   <section class="page cover">
     <div class="logo-box">CS</div>
+
     <div class="cover-title">
       Proposta<br />
       de Orçamento
     </div>
+
     <div class="cover-year">${year}</div>
-    <div class="cover-client">${client.name}</div>
+    <div class="cover-client">${escapeHtml(client.name)}</div>
   </section>
 
   <section class="page">
@@ -284,7 +306,7 @@ function buildProposalHtml(payload: any) {
 
     <div class="info-grid">
       <div>
-        <p><strong>DATA:</strong> ${new Date(proposal.issue_date).toLocaleDateString("pt-BR")}</p>
+        <p><strong>DATA:</strong> ${issueDate.toLocaleDateString("pt-BR")}</p>
         <p class="label">Carambolo Studio</p>
         <p>CNPJ 47.226.752/0001-39</p>
         <p>(86) 99994-7314</p>
@@ -294,8 +316,8 @@ function buildProposalHtml(payload: any) {
 
       <div style="text-align: right;">
         <p class="label">Cliente:</p>
-        <p>${client.name}</p>
-        <p>${client.city ?? ""} ${client.state ?? ""}</p>
+        <p>${escapeHtml(client.name)}</p>
+        <p>${escapeHtml(client.city)} ${escapeHtml(client.state)}</p>
       </div>
     </div>
 
@@ -314,7 +336,7 @@ function buildProposalHtml(payload: any) {
     </table>
 
     <div class="total-box">
-      CUSTO TOTAL: ${formatCurrency(proposal.total)}
+      CUSTO TOTAL: ${formatCurrency(Number(proposal.total))}
     </div>
 
     <div class="footer">
@@ -355,7 +377,7 @@ function buildProposalHtml(payload: any) {
     </div>
 
     <div class="signature">
-      Teresina, ${new Date(proposal.issue_date).toLocaleDateString("pt-BR")}<br />
+      Teresina, ${issueDate.toLocaleDateString("pt-BR")}<br />
       DIEGO PEREIRA DE OLIVEIRA
     </div>
   </section>
@@ -371,84 +393,123 @@ app.get("/health", async () => {
 app.post("/proposals/:id/generate-pdf", async (request, reply) => {
   const { id } = request.params as { id: string };
 
-  const { data: proposal, error: proposalError } = await supabase
-    .from("proposals")
-    .select("*")
-    .eq("id", id)
-    .single();
+  try {
+    app.log.info({ proposalId: id }, "Iniciando geração de PDF");
 
-  if (proposalError || !proposal) {
-    return reply.status(404).send({ error: "Proposta não encontrada." });
-  }
+    const { data: proposal, error: proposalError } = await supabase
+      .from("proposals")
+      .select("*")
+      .eq("id", id)
+      .single();
 
-  const { data: client, error: clientError } = await supabase
-    .from("clients")
-    .select("*")
-    .eq("id", proposal.client_id)
-    .single();
+    if (proposalError || !proposal) {
+      app.log.error({ proposalError }, "Proposta não encontrada");
+      return reply.status(404).send({ error: "Proposta não encontrada." });
+    }
 
-  if (clientError || !client) {
-    return reply.status(404).send({ error: "Cliente não encontrado." });
-  }
+    const { data: client, error: clientError } = await supabase
+      .from("clients")
+      .select("*")
+      .eq("id", proposal.client_id)
+      .single();
 
-  const { data: items, error: itemsError } = await supabase
-    .from("proposal_items")
-    .select("*")
-    .eq("proposal_id", id)
-    .order("sort_order");
+    if (clientError || !client) {
+      app.log.error({ clientError }, "Cliente não encontrado");
+      return reply.status(404).send({ error: "Cliente não encontrado." });
+    }
 
-  if (itemsError) {
-    return reply.status(500).send({ error: "Erro ao buscar itens." });
-  }
+    const { data: items, error: itemsError } = await supabase
+      .from("proposal_items")
+      .select("*")
+      .eq("proposal_id", id)
+      .order("sort_order");
 
-  const html = buildProposalHtml({
-    proposal,
-    client,
-    items: items ?? [],
-  });
+    if (itemsError) {
+      app.log.error({ itemsError }, "Erro ao buscar itens");
+      return reply.status(500).send({ error: "Erro ao buscar itens." });
+    }
 
-  const browser = await chromium.launch({
-    headless: true,
-  });
+    if (!items || items.length === 0) {
+      return reply.status(400).send({
+        error: "Esta proposta não possui itens. Adicione serviços antes de gerar o PDF.",
+      });
+    }
 
-  const page = await browser.newPage();
-  await page.setContent(html, { waitUntil: "networkidle" });
-
-  const pdfBuffer = await page.pdf({
-    format: "A4",
-    printBackground: true,
-  });
-
-  await browser.close();
-
-  const fileName = `proposta-${proposal.proposal_number ?? id}.pdf`;
-
-  const { error: uploadError } = await supabase.storage
-    .from("proposal-pdfs")
-    .upload(fileName, pdfBuffer, {
-      contentType: "application/pdf",
-      upsert: true,
+    const html = buildProposalHtml({
+      proposal,
+      client,
+      items,
     });
 
-  if (uploadError) {
-    console.error(uploadError);
-    return reply.status(500).send({ error: "Erro ao salvar PDF." });
+    const browser = await chromium.launch({
+      headless: true,
+    });
+
+    const page = await browser.newPage();
+
+    await page.setContent(html, {
+      waitUntil: "networkidle",
+    });
+
+    const pdfBuffer = await page.pdf({
+      format: "A4",
+      printBackground: true,
+    });
+
+    await browser.close();
+
+    const safeProposalNumber = String(proposal.proposal_number ?? id).replace(
+      /[^a-zA-Z0-9-_]/g,
+      "-",
+    );
+
+    const fileName = `proposta-${safeProposalNumber}.pdf`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("proposal-pdfs")
+      .upload(fileName, pdfBuffer, {
+        contentType: "application/pdf",
+        upsert: true,
+      });
+
+    if (uploadError) {
+      app.log.error({ uploadError }, "Erro ao salvar PDF no Storage");
+      return reply.status(500).send({
+        error: `Erro ao salvar PDF no Supabase Storage: ${uploadError.message}`,
+      });
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from("proposal-pdfs")
+      .getPublicUrl(fileName);
+
+    await supabase.from("proposal_files").insert({
+      proposal_id: id,
+      file_url: publicUrlData.publicUrl,
+      file_name: fileName,
+    });
+
+    app.log.info({ proposalId: id, fileName }, "PDF gerado com sucesso");
+
+    return {
+      fileName,
+      fileUrl: publicUrlData.publicUrl,
+    };
+  } catch (error) {
+    app.log.error({ error }, "Erro inesperado ao gerar PDF");
+
+    return reply.status(500).send({
+      error:
+        error instanceof Error
+          ? `Erro interno ao gerar PDF: ${error.message}`
+          : "Erro interno ao gerar PDF.",
+    });
   }
-
-  const { data: publicUrlData } = supabase.storage
-    .from("proposal-pdfs")
-    .getPublicUrl(fileName);
-
-  await supabase.from("proposal_files").insert({
-    proposal_id: id,
-    file_url: publicUrlData.publicUrl,
-    file_name: fileName,
-  });
-
-  return {
-    fileName,
-    fileUrl: publicUrlData.publicUrl,
-  };
 });
 
-app.listen({ port: Number(process.env.PORT ?? 3333), host: "0.0.0.0" });
+const port = Number(process.env.PORT ?? 3333);
+
+app.listen({ port, host: "0.0.0.0" }).catch((error) => {
+  app.log.error(error);
+  process.exit(1);
+});
