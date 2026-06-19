@@ -42,7 +42,14 @@ export function ProposalsPage() {
       return;
     }
 
-    setProposals((data ?? []) as ProposalRow[]);
+    const normalizedData = (data ?? []).map((proposal) => ({
+  ...proposal,
+  clients: Array.isArray(proposal.clients)
+    ? proposal.clients[0] ?? null
+    : proposal.clients ?? null,
+}));
+
+setProposals(normalizedData as unknown as ProposalRow[]);
   }
 
   useEffect(() => {
