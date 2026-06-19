@@ -12,6 +12,7 @@ import { ClientsPage } from "./pages/ClientsPage";
 import { ServicesPage } from "./pages/ServicesPage";
 import { ProposalsPage } from "./pages/ProposalsPage";
 import { NewProposalPage } from "./pages/NewProposalPage";
+import { EditProposalPage } from "./pages/EditProposalPage";
 import { LoginPage } from "./pages/LoginPage";
 import { SettingsPage } from "./pages/SettingsPage";
 
@@ -74,6 +75,7 @@ function Layout() {
           <Route path="/servicos" element={<ServicesPage />} />
           <Route path="/propostas" element={<ProposalsPage />} />
           <Route path="/propostas/nova" element={<NewProposalPage />} />
+          <Route path="/propostas/:id/editar" element={<EditProposalPage />} />
           <Route path="/configuracoes" element={<SettingsPage />} />
         </Routes>
       </main>
