@@ -12,6 +12,7 @@ type ProposalClient = {
   name: string;
   city: string | null;
   state: string | null;
+  phone: string | null;
 };
 
 type ProposalRow = {
@@ -31,6 +32,7 @@ type SupabaseProposalRow = Omit<ProposalRow, "clients" | "status"> & {
 type PdfResponse = {
   fileName?: string;
   fileUrl?: string;
+  expiresInSeconds?: number;
   error?: string;
 };
 
@@ -71,10 +73,67 @@ function normalizeProposalRow(proposal: SupabaseProposalRow): ProposalRow {
   };
 }
 
+function normalizeBrazilianPhone(phone: string | null | undefined) {
+  if (!phone) return "";
+
+  const digits = phone.replace(/\D/g, "");
+
+  if (!digits) return "";
+
+  if (digits.startsWith("55")) {
+    return digits;
+  }
+
+  if (digits.length === 10 || digits.length === 11) {
+    return `55${digits}`;
+  }
+
+  return digits;
+}
+
+function buildWhatsappMessage(proposal: ProposalRow, fileUrl: string) {
+  const clientName = proposal.clients?.name ?? "cliente";
+
+  return [
+    `Olá, ${clientName}.`,
+    "",
+    "Segue a proposta do Carambolo Studio referente aos serviços solicitados.",
+    "",
+    `Valor total: ${formatCurrency(proposal.total)}`,
+    "Para agendamento, o pagamento inicial é de 50%.",
+    "",
+    "PDF da proposta:",
+    fileUrl,
+  ].join("\n");
+}
+
+async function copyToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = text;
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  textArea.style.top = "-9999px";
+
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+
+  document.execCommand("copy");
+  document.body.removeChild(textArea);
+}
+
 export function ProposalsPage() {
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingPdfId, setLoadingPdfId] = useState<string | null>(null);
+  const [loadingWhatsappId, setLoadingWhatsappId] = useState<string | null>(
+    null,
+  );
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
 
   async function loadProposals() {
@@ -92,7 +151,8 @@ export function ProposalsPage() {
         clients (
           name,
           city,
-          state
+          state,
+          phone
         )
       `,
       )
@@ -105,9 +165,9 @@ export function ProposalsPage() {
       return;
     }
 
-    const normalizedData = ((data ?? []) as unknown as SupabaseProposalRow[]).map(
-      normalizeProposalRow,
-    );
+    const normalizedData = (
+      (data ?? []) as unknown as SupabaseProposalRow[]
+    ).map(normalizeProposalRow);
 
     setProposals(normalizedData);
     setLoading(false);
@@ -147,46 +207,51 @@ export function ProposalsPage() {
     setUpdatingStatusId(null);
   }
 
-  async function generatePdf(proposalId: string) {
+  async function requestPdf(proposalId: string): Promise<PdfResponse | null> {
     const apiUrl = getApiUrl();
 
     if (!apiUrl) {
       alert("VITE_API_URL não configurada.");
-      return;
+      return null;
     }
 
+    const response = await fetch(`${apiUrl}/proposals/${proposalId}/generate-pdf`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({}),
+    });
+
+    const contentType = response.headers.get("content-type");
+
+    const result: PdfResponse = contentType?.includes("application/json")
+      ? await response.json()
+      : { error: await response.text() };
+
+    if (!response.ok) {
+      console.error("Erro ao gerar PDF:", result);
+      alert(result.error ?? "Erro ao gerar PDF.");
+      return null;
+    }
+
+    if (!result.fileUrl) {
+      console.error("Backend não retornou fileUrl:", result);
+      alert("PDF gerado, mas o backend não retornou o link do arquivo.");
+      return null;
+    }
+
+    return result;
+  }
+
+  async function generatePdf(proposalId: string) {
     setLoadingPdfId(proposalId);
 
     try {
-      const response = await fetch(
-        `${apiUrl}/proposals/${proposalId}/generate-pdf`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({}),
-        },
-      );
+      const result = await requestPdf(proposalId);
 
-      const contentType = response.headers.get("content-type");
-
-      const result: PdfResponse = contentType?.includes("application/json")
-        ? await response.json()
-        : { error: await response.text() };
-
-      if (!response.ok) {
-        console.error("Erro ao gerar PDF:", result);
-        alert(result.error ?? "Erro ao gerar PDF.");
-        return;
-      }
-
-      if (!result.fileUrl) {
-        console.error("Backend não retornou fileUrl:", result);
-        alert("PDF gerado, mas o backend não retornou o link do arquivo.");
-        return;
-      }
+      if (!result?.fileUrl) return;
 
       window.open(result.fileUrl, "_blank", "noopener,noreferrer");
     } catch (error) {
@@ -194,6 +259,48 @@ export function ProposalsPage() {
       alert("Erro de conexão com o backend.");
     } finally {
       setLoadingPdfId(null);
+    }
+  }
+
+  async function sendWhatsapp(proposal: ProposalRow) {
+    setLoadingWhatsappId(proposal.id);
+
+    try {
+      const result = await requestPdf(proposal.id);
+
+      if (!result?.fileUrl) return;
+
+      const message = buildWhatsappMessage(proposal, result.fileUrl);
+      const normalizedPhone = normalizeBrazilianPhone(proposal.clients?.phone);
+
+      if (!normalizedPhone) {
+        await copyToClipboard(message);
+
+        alert(
+          "O cliente não possui telefone cadastrado. A mensagem foi copiada para a área de transferência.",
+        );
+
+        if (proposal.status !== "sent") {
+          await updateStatus(proposal.id, "sent");
+        }
+
+        return;
+      }
+
+      const whatsappUrl = `https://wa.me/${normalizedPhone}?text=${encodeURIComponent(
+        message,
+      )}`;
+
+      window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+
+      if (proposal.status !== "sent") {
+        await updateStatus(proposal.id, "sent");
+      }
+    } catch (error) {
+      console.error("Erro ao preparar WhatsApp:", error);
+      alert("Erro ao preparar mensagem de WhatsApp.");
+    } finally {
+      setLoadingWhatsappId(null);
     }
   }
 
@@ -241,12 +348,19 @@ export function ProposalsPage() {
                     <strong>
                       {proposal.clients?.name ?? "Cliente não localizado"}
                     </strong>
+
                     <p className="text-neutral-500">
                       {proposal.clients?.city ?? "-"}
                       {proposal.clients?.state
                         ? `/${proposal.clients.state}`
                         : ""}
                     </p>
+
+                    {proposal.clients?.phone && (
+                      <p className="mt-1 text-xs text-neutral-400">
+                        {proposal.clients.phone}
+                      </p>
+                    )}
                   </td>
 
                   <td className="p-4">{formatDate(proposal.issue_date)}</td>
@@ -296,15 +410,27 @@ export function ProposalsPage() {
                   </td>
 
                   <td className="p-4">
-                    <button
-                      onClick={() => generatePdf(proposal.id)}
-                      disabled={loadingPdfId === proposal.id}
-                      className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-black disabled:opacity-60"
-                    >
-                      {loadingPdfId === proposal.id
-                        ? "Gerando..."
-                        : "Gerar PDF"}
-                    </button>
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={() => generatePdf(proposal.id)}
+                        disabled={loadingPdfId === proposal.id}
+                        className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-black disabled:opacity-60"
+                      >
+                        {loadingPdfId === proposal.id
+                          ? "Gerando..."
+                          : "Gerar PDF"}
+                      </button>
+
+                      <button
+                        onClick={() => sendWhatsapp(proposal)}
+                        disabled={loadingWhatsappId === proposal.id}
+                        className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white disabled:opacity-60"
+                      >
+                        {loadingWhatsappId === proposal.id
+                          ? "Preparando..."
+                          : "WhatsApp"}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
