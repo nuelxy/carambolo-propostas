@@ -1,7 +1,7 @@
 {
-  "name": "carambolo-propostas-api",
+  "name": "api",
   "version": "1.0.0",
-  "private": true,
+  "main": "dist/server.js",
   "type": "module",
   "scripts": {
     "dev": "tsx src/server.ts",
@@ -10,15 +10,15 @@
     "postinstall": "playwright install chromium"
   },
   "dependencies": {
-    "@fastify/cors": "latest",
-    "@supabase/supabase-js": "latest",
-    "dotenv": "latest",
-    "fastify": "latest",
-    "playwright": "latest"
+    "@fastify/cors": "^11.0.1",
+    "@supabase/supabase-js": "^2.50.0",
+    "dotenv": "^16.5.0",
+    "fastify": "^5.4.0",
+    "playwright": "^1.52.0"
   },
   "devDependencies": {
-    "@types/node": "latest",
-    "tsx": "latest",
-    "typescript": "latest"
+    "@types/node": "^22.15.30",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
   }
 }
