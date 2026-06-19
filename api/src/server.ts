@@ -1,14 +1,12 @@
 import "dotenv/config";
+import fs from "node:fs";
+import path from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { createClient } from "@supabase/supabase-js";
 import { chromium } from "playwright";
 
 const app = Fastify({ logger: true });
-
-app.addContentTypeParser("*", { parseAs: "string" }, (_request, body, done) => {
-  done(null, body);
-});
 
 await app.register(cors, {
   origin: true,
@@ -25,13 +23,6 @@ if (!supabaseUrl || !serviceRoleKey) {
 
 const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-function formatCurrency(value: number) {
-  return Number(value).toLocaleString("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  });
-}
-
 function escapeHtml(value: unknown) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -41,30 +32,241 @@ function escapeHtml(value: unknown) {
     .replaceAll("'", "&#039;");
 }
 
+function formatCurrency(value: unknown) {
+  return Number(value ?? 0).toLocaleString("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+  });
+}
+
+function formatDate(value: string | null | undefined) {
+  if (!value) return "";
+
+  const date = new Date(`${value}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleDateString("pt-BR", {
+    timeZone: "America/Fortaleza",
+  });
+}
+
+function getLogoDataUrl() {
+  const logoPath = path.resolve(process.cwd(), "assets", "carambolo-logo.png");
+
+  if (!fs.existsSync(logoPath)) {
+    throw new Error(`Logo não encontrado em: ${logoPath}`);
+  }
+
+  const buffer = fs.readFileSync(logoPath);
+  const base64 = buffer.toString("base64");
+
+  return `data:image/png;base64,${base64}`;
+}
+
+function chunkItems<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks.length ? chunks : [[]];
+}
+
 function buildProposalHtml(payload: any) {
   const { proposal, client, items } = payload;
 
-  const issueDate = new Date(proposal.issue_date);
-  const year = issueDate.getFullYear();
+  const logoDataUrl = getLogoDataUrl();
+  const issueDate = formatDate(proposal.issue_date);
 
-  const rows = items
-    .map(
-      (item: any) => `
-      <tr>
-        <td>${escapeHtml(item.service_name)}</td>
-        <td>${escapeHtml(item.description)}</td>
-        <td class="center">${Number(item.quantity)}</td>
-        <td class="right">${formatCurrency(Number(item.unit_price))}</td>
-      </tr>
-    `,
+  const issueYear = proposal.issue_date
+    ? new Date(`${proposal.issue_date}T00:00:00`).getFullYear()
+    : new Date().getFullYear();
+
+  const company = {
+    name: "Carambolo Studio",
+    cnpj: "47.226.752/0001-39",
+    phone: "(86) 99994-7314",
+    email: "carambolostudio@gmail.com",
+    instagram: "@carambolostudio",
+    pixKey: "carambolostudio@gmail.com",
+    bank: "Banco do Brasil",
+    bankHolder: "Diego Pereira de Oliveira",
+    bankAgency: "3178-0",
+    bankAccount: "121451-9",
+    responsibleName: "Diego Pereira de Oliveira",
+    city: "Teresina",
+  };
+
+  const itemPages = chunkItems(items ?? [], 6);
+
+  function renderItemsRows(pageItems: any[]) {
+    return pageItems
+      .map((item: any) => {
+        const quantity = Number(item.quantity ?? 0);
+        const unitPrice = Number(item.unit_price ?? 0);
+        const total = Number(item.total ?? quantity * unitPrice);
+
+        return `
+          <tr>
+            <td class="service-name">${escapeHtml(item.service_name)}</td>
+            <td class="description">${escapeHtml(item.description)}</td>
+            <td class="quantity">${quantity}</td>
+            <td class="money">${formatCurrency(unitPrice)}</td>
+            <td class="money strong">${formatCurrency(total)}</td>
+          </tr>
+        `;
+      })
+      .join("");
+  }
+
+  function renderBudgetPage(
+    pageItems: any[],
+    pageIndex: number,
+    totalPages: number,
+  ) {
+    const isLastBudgetPage = pageIndex === totalPages - 1;
+
+    return `
+      <section class="page budget-page">
+        <header class="document-header">
+          <div class="brand-block">
+            <img class="header-logo" src="${logoDataUrl}" alt="Carambolo Studio" />
+            <div>
+              <p class="eyebrow">Proposta comercial</p>
+              <h2>${escapeHtml(company.name)}</h2>
+            </div>
+          </div>
+
+          <div class="header-meta">
+            <p><span>Data</span>${issueDate}</p>
+            <p><span>Proposta</span>${escapeHtml(proposal.proposal_number ?? "")}</p>
+          </div>
+        </header>
+
+        <main class="budget-content">
+          <section class="info-grid">
+            <div class="info-card company-card">
+              <p class="card-label">Contratada</p>
+              <h3>${escapeHtml(company.name)}</h3>
+              <p>CNPJ ${escapeHtml(company.cnpj)}</p>
+              <p>${escapeHtml(company.phone)}</p>
+              <p>${escapeHtml(company.email)}</p>
+              <p>${escapeHtml(company.instagram)}</p>
+            </div>
+
+            <div class="info-card client-card">
+              <p class="card-label">Cliente</p>
+              <h3>${escapeHtml(client.name)}</h3>
+              <p>${escapeHtml(client.city)} / ${escapeHtml(client.state)}</p>
+              ${client.phone ? `<p>${escapeHtml(client.phone)}</p>` : ""}
+              ${client.email ? `<p>${escapeHtml(client.email)}</p>` : ""}
+            </div>
+          </section>
+
+          <section class="table-section">
+            <div class="table-title-row">
+              <div>
+                <p class="eyebrow dark">Serviços selecionados</p>
+                <h3>Escopo do orçamento</h3>
+              </div>
+
+              ${
+                totalPages > 1
+                  ? `<p class="page-note">Página ${pageIndex + 1} de ${totalPages}</p>`
+                  : ""
+              }
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Serviço</th>
+                  <th>Descrição</th>
+                  <th>Qnt</th>
+                  <th>Valor unit.</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                ${renderItemsRows(pageItems)}
+              </tbody>
+            </table>
+          </section>
+
+          ${
+            isLastBudgetPage
+              ? `
+                <section class="summary-section">
+                  <div class="notes-box">
+                    <p class="card-label">Observações</p>
+                    <p>${escapeHtml(
+                      proposal.notes ??
+                        "Valores sujeitos à confirmação de agenda. A reserva da data ocorre mediante pagamento do sinal previsto nesta proposta.",
+                    )}</p>
+                  </div>
+
+                  <div class="summary-box">
+                    <div class="summary-line">
+                      <span>Subtotal</span>
+                      <strong>${formatCurrency(proposal.subtotal)}</strong>
+                    </div>
+
+                    ${
+                      Number(proposal.discount_value ?? 0) > 0
+                        ? `
+                          <div class="summary-line muted">
+                            <span>Desconto</span>
+                            <strong>${formatCurrency(proposal.discount_value)}</strong>
+                          </div>
+                        `
+                        : ""
+                    }
+
+                    <div class="summary-divider"></div>
+
+                    <div class="summary-line total">
+                      <span>Custo total</span>
+                      <strong>${formatCurrency(proposal.total)}</strong>
+                    </div>
+
+                    <div class="summary-line down-payment">
+                      <span>Sinal de 50%</span>
+                      <strong>${formatCurrency(proposal.down_payment)}</strong>
+                    </div>
+                  </div>
+                </section>
+              `
+              : ""
+          }
+        </main>
+
+        <footer class="document-footer light">
+          <span>${escapeHtml(company.phone)}</span>
+          <span>${escapeHtml(company.email)}</span>
+          <span>${escapeHtml(company.instagram)}</span>
+        </footer>
+      </section>
+    `;
+  }
+
+  const budgetPages = itemPages
+    .map((pageItems, pageIndex) =>
+      renderBudgetPage(pageItems, pageIndex, itemPages.length),
     )
     .join("");
 
   return `
 <!doctype html>
-<html>
+<html lang="pt-BR">
 <head>
   <meta charset="utf-8" />
+  <title>Proposta ${escapeHtml(proposal.proposal_number ?? "")}</title>
+
   <style>
     @page {
       size: A4;
@@ -75,310 +277,721 @@ function buildProposalHtml(payload: any) {
       box-sizing: border-box;
     }
 
+    html,
     body {
       margin: 0;
-      font-family: Arial, sans-serif;
-      color: #111;
+      padding: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: #161616;
+      background: #ffffff;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
     }
 
     .page {
       width: 210mm;
-      min-height: 297mm;
-      padding: 22mm;
-      page-break-after: always;
+      height: 297mm;
       position: relative;
       overflow: hidden;
+      page-break-after: always;
     }
 
-    .cover {
-      height: 297mm;
-      background: #1f1f1f;
-      color: white;
-      border-top: 18mm solid #f6aa00;
-      border-bottom: 18mm solid #f6aa00;
+    .page:last-child {
+      page-break-after: auto;
     }
 
-    .logo-box {
-      width: 90px;
-      height: 90px;
-      background: #f6aa00;
-      color: #111;
+    .cover-page,
+    .payment-page {
+      background:
+        radial-gradient(circle at 18% 15%, rgba(243, 175, 0, 0.20), transparent 28%),
+        linear-gradient(135deg, #0f0f10 0%, #191919 45%, #0b0b0c 100%);
+      color: #f5f1e8;
+    }
+
+    .cover-page::before,
+    .payment-page::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.065;
+      background-image:
+        linear-gradient(45deg, rgba(243, 175, 0, 0.7) 1px, transparent 1px),
+        linear-gradient(-45deg, rgba(255, 255, 255, 0.25) 1px, transparent 1px);
+      background-size: 18mm 18mm;
+      pointer-events: none;
+    }
+
+    .cover-frame {
+      position: absolute;
+      inset: 18mm;
+      border: 1px solid rgba(243, 175, 0, 0.34);
+      padding: 14mm;
       display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 900;
-      border-radius: 14px;
+      flex-direction: column;
+      z-index: 1;
+    }
+
+    .cover-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+
+    .cover-logo {
+      width: 52mm;
+      height: auto;
+      object-fit: contain;
+    }
+
+    .proposal-number {
+      text-align: right;
+      color: #c9c4b9;
+      font-size: 9px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+    }
+
+    .proposal-number strong {
+      display: block;
+      color: #f3af00;
+      margin-top: 4px;
+      font-size: 12px;
+      letter-spacing: 0.08em;
+    }
+
+    .cover-main {
+      margin-top: auto;
+      margin-bottom: 28mm;
+    }
+
+    .gold-line {
+      width: 30mm;
+      height: 2px;
+      background: #f3af00;
+      margin-bottom: 10mm;
     }
 
     .cover-title {
-      margin-top: 90mm;
-      font-size: 42px;
-      line-height: 1;
-      font-weight: 900;
+      margin: 0;
+      font-size: 45px;
+      line-height: 0.96;
       text-transform: uppercase;
+      letter-spacing: -0.04em;
+      color: #f3af00;
+      font-weight: 900;
     }
 
     .cover-year {
-      margin-top: 10px;
-      font-size: 36px;
-      letter-spacing: 6px;
+      margin-top: 8mm;
+      font-size: 22px;
+      letter-spacing: 0.28em;
+      color: #f5f1e8;
     }
 
-    .cover-client {
-      margin-top: 12px;
-      border-top: 2px solid white;
-      padding-top: 8px;
+    .client-strip {
+      margin-top: 14mm;
+      padding-top: 6mm;
+      border-top: 1px solid rgba(245, 241, 232, 0.32);
+    }
+
+    .client-strip span {
+      display: block;
+      color: #a8a39a;
+      font-size: 9px;
+      letter-spacing: 0.28em;
       text-transform: uppercase;
-      letter-spacing: 5px;
-      font-size: 14px;
+      margin-bottom: 3mm;
     }
 
-    .header {
-      text-align: center;
-    }
-
-    .brand {
-      font-size: 28px;
-      font-weight: 900;
-      letter-spacing: 4px;
+    .client-strip strong {
+      display: block;
+      color: #ffffff;
+      font-size: 18px;
+      line-height: 1.2;
+      letter-spacing: 0.10em;
       text-transform: uppercase;
+    }
+
+    .cover-footer {
+      margin-top: auto;
+      display: flex;
+      justify-content: space-between;
+      color: #aaa49a;
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border-top: 1px solid rgba(243, 175, 0, 0.25);
+      padding-top: 6mm;
+    }
+
+    .budget-page {
+      background: #f7f3ea;
+      padding: 16mm 18mm;
+      color: #151515;
+    }
+
+    .document-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 7mm;
+      border-bottom: 1px solid rgba(21, 21, 21, 0.16);
+    }
+
+    .brand-block {
+      display: flex;
+      align-items: center;
+      gap: 6mm;
+    }
+
+    .header-logo {
+      width: 31mm;
+      height: auto;
+      object-fit: contain;
+    }
+
+    .eyebrow {
+      margin: 0 0 2mm 0;
+      color: #f3af00;
+      font-size: 8px;
+      line-height: 1;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      font-weight: 800;
+    }
+
+    .eyebrow.dark {
+      color: #7f5c00;
+    }
+
+    .brand-block h2 {
+      margin: 0;
+      font-size: 20px;
+      text-transform: uppercase;
+      letter-spacing: -0.03em;
+      line-height: 1;
+    }
+
+    .header-meta {
+      text-align: right;
+      font-size: 10px;
+      color: #333;
+    }
+
+    .header-meta p {
+      margin: 0 0 3mm 0;
+    }
+
+    .header-meta span {
+      display: block;
+      color: #8c7f63;
+      font-size: 8px;
+      letter-spacing: 0.20em;
+      text-transform: uppercase;
+      font-weight: 800;
+      margin-bottom: 1mm;
+    }
+
+    .budget-content {
+      padding-top: 9mm;
     }
 
     .info-grid {
-      margin-top: 28mm;
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 24mm;
-      font-size: 13px;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 6mm;
     }
 
-    .label {
-      color: #f6aa00;
-      font-weight: 900;
+    .info-card {
+      background: #ffffff;
+      border: 1px solid rgba(21, 21, 21, 0.10);
+      border-left: 3px solid #f3af00;
+      padding: 6mm;
+      min-height: 38mm;
+    }
+
+    .card-label {
+      margin: 0 0 3mm 0;
+      color: #7f5c00;
+      font-size: 8px;
+      letter-spacing: 0.20em;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      font-weight: 900;
+    }
+
+    .info-card h3 {
+      margin: 0 0 4mm 0;
+      font-size: 16px;
+      line-height: 1.15;
+      text-transform: uppercase;
+    }
+
+    .info-card p {
+      margin: 0 0 1.6mm 0;
+      color: #444;
+      font-size: 10px;
+      line-height: 1.3;
+    }
+
+    .client-card {
+      text-align: right;
+      border-left: 1px solid rgba(21, 21, 21, 0.10);
+      border-right: 3px solid #f3af00;
+    }
+
+    .table-section {
+      margin-top: 9mm;
+    }
+
+    .table-title-row {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      margin-bottom: 4mm;
+    }
+
+    .table-title-row h3 {
+      margin: 0;
+      font-size: 17px;
+      text-transform: uppercase;
+      letter-spacing: -0.02em;
+    }
+
+    .page-note {
+      margin: 0;
+      color: #766b57;
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
     }
 
     table {
       width: 100%;
-      margin-top: 28mm;
       border-collapse: collapse;
       table-layout: fixed;
-      font-size: 12px;
+      background: #fff;
+      border: 1px solid rgba(21, 21, 21, 0.16);
     }
 
     th {
-      background: #f6aa00;
-      color: #111;
-      padding: 12px;
+      background: #151515;
+      color: #f3af00;
+      padding: 4mm 3mm;
+      font-size: 8px;
+      line-height: 1.2;
+      letter-spacing: 0.14em;
       text-transform: uppercase;
-      border: 1px solid #ddd;
+      text-align: left;
+      border-right: 1px solid rgba(255, 255, 255, 0.10);
     }
 
-    td {
-      padding: 12px;
-      border: 1px solid #ddd;
-      vertical-align: middle;
-      background: #f7f7f7;
-    }
-
-    th:nth-child(1), td:nth-child(1) {
-      width: 28%;
-    }
-
-    th:nth-child(2), td:nth-child(2) {
-      width: 38%;
-    }
-
-    th:nth-child(3), td:nth-child(3) {
-      width: 12%;
-    }
-
-    th:nth-child(4), td:nth-child(4) {
+    th:nth-child(1),
+    td:nth-child(1) {
       width: 22%;
     }
 
-    .center {
+    th:nth-child(2),
+    td:nth-child(2) {
+      width: 36%;
+    }
+
+    th:nth-child(3),
+    td:nth-child(3) {
+      width: 8%;
       text-align: center;
     }
 
-    .right {
+    th:nth-child(4),
+    td:nth-child(4),
+    th:nth-child(5),
+    td:nth-child(5) {
+      width: 17%;
       text-align: right;
     }
 
-    .total-box {
-      margin-top: 22mm;
-      margin-left: auto;
-      width: 95mm;
-      background: #f2f2f2;
-      padding: 12px;
-      text-align: right;
-      font-size: 16px;
+    td {
+      padding: 4mm 3mm;
+      vertical-align: top;
+      border-bottom: 1px solid rgba(21, 21, 21, 0.10);
+      border-right: 1px solid rgba(21, 21, 21, 0.08);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    tr:nth-child(even) td {
+      background: #fbfaf7;
+    }
+
+    .service-name {
+      font-weight: 800;
+      color: #191919;
+    }
+
+    .description {
+      color: #555;
+    }
+
+    .quantity {
+      color: #222;
+      font-weight: 700;
+    }
+
+    .money {
+      white-space: nowrap;
+      color: #222;
+    }
+
+    .money.strong {
       font-weight: 900;
-      letter-spacing: 1px;
     }
 
-    .footer {
-      position: absolute;
-      left: 22mm;
-      right: 22mm;
-      bottom: 14mm;
+    .summary-section {
+      margin-top: 8mm;
+      display: grid;
+      grid-template-columns: 1fr 72mm;
+      gap: 7mm;
+      align-items: stretch;
+    }
+
+    .notes-box {
+      background: #efe8d9;
+      border: 1px solid rgba(21, 21, 21, 0.10);
+      padding: 5mm;
+    }
+
+    .notes-box p:last-child {
+      margin: 0;
+      font-size: 9.5px;
+      color: #4a4235;
+      line-height: 1.45;
+    }
+
+    .summary-box {
+      background: #151515;
+      color: #ffffff;
+      padding: 6mm;
+      border-top: 3px solid #f3af00;
+    }
+
+    .summary-line {
       display: flex;
       justify-content: space-between;
-      border-top: 3px solid #f6aa00;
-      padding-top: 10px;
-      font-size: 12px;
+      gap: 6mm;
+      font-size: 10px;
+      margin-bottom: 3mm;
     }
 
-    .payment {
-      height: 297mm;
-      background: #1f1f1f;
-      color: white;
-      border-top: 18mm solid #f6aa00;
-      border-bottom: 18mm solid #f6aa00;
+    .summary-line span {
+      color: #c9c4b9;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 8px;
+      font-weight: 800;
+    }
+
+    .summary-line strong {
+      color: #ffffff;
+      font-size: 11px;
+    }
+
+    .summary-line.muted strong {
+      color: #c9c4b9;
+    }
+
+    .summary-divider {
+      height: 1px;
+      background: rgba(243, 175, 0, 0.45);
+      margin: 4mm 0;
+    }
+
+    .summary-line.total {
+      align-items: baseline;
+      margin-bottom: 4mm;
+    }
+
+    .summary-line.total span {
+      color: #f3af00;
+      font-size: 10px;
+    }
+
+    .summary-line.total strong {
+      color: #f3af00;
+      font-size: 20px;
+      letter-spacing: -0.04em;
+    }
+
+    .summary-line.down-payment {
+      padding-top: 4mm;
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      margin-bottom: 0;
+    }
+
+    .document-footer {
+      position: absolute;
+      left: 18mm;
+      right: 18mm;
+      bottom: 12mm;
+      display: flex;
+      justify-content: space-between;
+      gap: 6mm;
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding-top: 4mm;
+    }
+
+    .document-footer.light {
+      color: #6f6656;
+      border-top: 1px solid rgba(21, 21, 21, 0.16);
+    }
+
+    .payment-page {
+      padding: 18mm;
+    }
+
+    .payment-inner {
+      position: relative;
+      z-index: 1;
+      height: 100%;
+      border: 1px solid rgba(243, 175, 0, 0.28);
+      padding: 12mm;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .payment-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding-bottom: 8mm;
+      border-bottom: 1px solid rgba(243, 175, 0, 0.24);
+    }
+
+    .payment-logo {
+      width: 42mm;
+      height: auto;
+      object-fit: contain;
     }
 
     .payment-title {
+      margin: 0;
+      color: #f3af00;
       text-align: right;
-      font-size: 42px;
-      font-weight: 900;
-      line-height: 1.15;
+      font-size: 36px;
+      line-height: 1.02;
+      letter-spacing: -0.04em;
+      text-transform: uppercase;
     }
 
-    .payment-grid {
-      margin-top: 55mm;
+    .payment-methods {
+      margin-top: 14mm;
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 24mm;
-      font-size: 14px;
+      gap: 7mm;
     }
 
-    .payment-item {
-      display: grid;
-      grid-template-columns: 48px 1fr;
-      gap: 16px;
-      align-items: start;
+    .payment-card {
+      position: relative;
+      min-height: 50mm;
+      padding: 7mm;
+      background: rgba(255, 255, 255, 0.045);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      border-left: 3px solid #f3af00;
     }
 
-    .number {
-      width: 48px;
-      height: 48px;
-      border-radius: 999px;
-      background: #f6aa00;
-      color: white;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 900;
-      font-size: 20px;
-    }
-
-    .signature {
+    .payment-number {
       position: absolute;
-      bottom: 40mm;
-      left: 0;
-      right: 0;
-      text-align: center;
-      font-size: 13px;
-      font-weight: 700;
+      right: 5mm;
+      top: 4mm;
+      color: rgba(243, 175, 0, 0.20);
+      font-size: 34px;
+      line-height: 1;
+      font-weight: 900;
+    }
+
+    .payment-card h3 {
+      position: relative;
+      margin: 0 0 5mm 0;
+      color: #ffffff;
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: -0.02em;
+      padding-right: 18mm;
+    }
+
+    .payment-card p,
+    .payment-card li {
+      margin: 0 0 2mm 0;
+      color: #c9c4b9;
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+
+    .payment-card strong {
+      color: #f3af00;
+      font-weight: 900;
+    }
+
+    .bank-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 3mm 5mm;
+    }
+
+    .bank-grid span {
+      display: block;
+      color: #8e887f;
+      font-size: 7px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      margin-bottom: 1mm;
+      font-weight: 900;
+    }
+
+    .signature-box {
+      margin-top: auto;
+      margin-left: auto;
+      width: 78mm;
+      text-align: right;
+      padding-top: 6mm;
+      border-top: 1px solid rgba(243, 175, 0, 0.32);
+    }
+
+    .signature-box p {
+      margin: 0 0 2mm 0;
+      color: #c9c4b9;
+      font-size: 10px;
+    }
+
+    .signature-box strong {
+      display: block;
+      color: #f3af00;
+      font-size: 10px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .payment-footer {
+      margin-top: 8mm;
+      display: flex;
+      justify-content: space-between;
+      color: #8e887f;
+      font-size: 8px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      padding-top: 5mm;
     }
   </style>
 </head>
 
 <body>
-  <section class="page cover">
-    <div class="logo-box">CS</div>
+  <section class="page cover-page">
+    <div class="cover-frame">
+      <div class="cover-top">
+        <img class="cover-logo" src="${logoDataUrl}" alt="Carambolo Studio" />
 
-    <div class="cover-title">
-      Proposta<br />
-      de Orçamento
-    </div>
-
-    <div class="cover-year">${year}</div>
-    <div class="cover-client">${escapeHtml(client.name)}</div>
-  </section>
-
-  <section class="page">
-    <div class="header">
-      <div class="logo-box" style="margin: 0 auto 16px auto;">CS</div>
-      <div class="brand">Carambolo Studio</div>
-    </div>
-
-    <div class="info-grid">
-      <div>
-        <p><strong>DATA:</strong> ${issueDate.toLocaleDateString("pt-BR")}</p>
-        <p class="label">Carambolo Studio</p>
-        <p>CNPJ 47.226.752/0001-39</p>
-        <p>(86) 99994-7314</p>
-        <p>carambolostudio@gmail.com</p>
-        <p>@carambolostudio</p>
+        <div class="proposal-number">
+          Proposta
+          <strong>${escapeHtml(proposal.proposal_number ?? "")}</strong>
+        </div>
       </div>
 
-      <div style="text-align: right;">
-        <p class="label">Cliente:</p>
-        <p>${escapeHtml(client.name)}</p>
-        <p>${escapeHtml(client.city)} ${escapeHtml(client.state)}</p>
-      </div>
-    </div>
+      <main class="cover-main">
+        <div class="gold-line"></div>
 
-    <table>
-      <thead>
-        <tr>
-          <th>Serviço</th>
-          <th>Descrição</th>
-          <th>QNT</th>
-          <th>Valor</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-      </tbody>
-    </table>
+        <h1 class="cover-title">
+          Proposta<br />
+          de Orçamento
+        </h1>
 
-    <div class="total-box">
-      CUSTO TOTAL: ${formatCurrency(Number(proposal.total))}
-    </div>
+        <div class="cover-year">${issueYear}</div>
 
-    <div class="footer">
-      <span>(86) 99994-7314</span>
-      <span>carambolostudio@gmail.com</span>
-      <span>@carambolostudio</span>
+        <div class="client-strip">
+          <span>Cliente</span>
+          <strong>${escapeHtml(client.name)}</strong>
+        </div>
+      </main>
+
+      <footer class="cover-footer">
+        <span>${escapeHtml(company.instagram)}</span>
+        <span>${escapeHtml(company.phone)}</span>
+        <span>${escapeHtml(company.email)}</span>
+      </footer>
     </div>
   </section>
 
-  <section class="page payment">
-    <div class="logo-box">CS</div>
+  ${budgetPages}
 
-    <div class="payment-title">
-      Formas de<br />
-      Pagamento
-    </div>
+  <section class="page payment-page">
+    <div class="payment-inner">
+      <header class="payment-header">
+        <img class="payment-logo" src="${logoDataUrl}" alt="Carambolo Studio" />
+        <h2 class="payment-title">
+          Formas de<br />
+          Pagamento
+        </h2>
+      </header>
 
-    <div class="payment-grid">
-      <div class="payment-item">
-        <div class="number">01</div>
-        <div>Pagamento da proposta deverá ser realizado 50% para o agendamento das datas e o restante na conclusão do serviço.</div>
-      </div>
+      <main class="payment-methods">
+        <article class="payment-card">
+          <div class="payment-number">01</div>
+          <h3>Cartão de Crédito</h3>
+          <p>Pagamento em até <strong>12x</strong>, com juros da operadora por conta do cliente.</p>
+        </article>
 
-      <div class="payment-item">
-        <div class="number">02</div>
-        <div>Cartão de Crédito em até 12x com juros da operadora por conta do Cliente.</div>
-      </div>
+        <article class="payment-card">
+          <div class="payment-number">02</div>
+          <h3>Condição de Agendamento</h3>
+          <p>Pagamento de <strong>50%</strong> para reserva e agendamento das datas.</p>
+          <p>O restante será pago na conclusão do serviço.</p>
+        </article>
 
-      <div class="payment-item">
-        <div class="number">03</div>
-        <div>Pagamento através de Pix<br />Chave: carambolostudio@gmail.com</div>
-      </div>
+        <article class="payment-card">
+          <div class="payment-number">03</div>
+          <h3>Pix</h3>
+          <p>Chave Pix:</p>
+          <p><strong>${escapeHtml(company.pixKey)}</strong></p>
+        </article>
 
-      <div class="payment-item">
-        <div class="number">04</div>
-        <div>Transferência Bancária<br />BANCO DO BRASIL<br />DIEGO PEREIRA DE OLIVEIRA<br />AG: 3178-0<br />CC: 121451-9</div>
-      </div>
-    </div>
+        <article class="payment-card">
+          <div class="payment-number">04</div>
+          <h3>Transferência Bancária</h3>
 
-    <div class="signature">
-      Teresina, ${issueDate.toLocaleDateString("pt-BR")}<br />
-      DIEGO PEREIRA DE OLIVEIRA
+          <div class="bank-grid">
+            <p>
+              <span>Banco</span>
+              ${escapeHtml(company.bank)}
+            </p>
+
+            <p>
+              <span>Titular</span>
+              ${escapeHtml(company.bankHolder)}
+            </p>
+
+            <p>
+              <span>Agência</span>
+              ${escapeHtml(company.bankAgency)}
+            </p>
+
+            <p>
+              <span>Conta</span>
+              ${escapeHtml(company.bankAccount)}
+            </p>
+          </div>
+        </article>
+      </main>
+
+      <section class="signature-box">
+        <p>${escapeHtml(company.city)}, ${issueDate}</p>
+        <strong>${escapeHtml(company.responsibleName)}</strong>
+      </section>
+
+      <footer class="payment-footer">
+        <span>${escapeHtml(company.instagram)}</span>
+        <span>${escapeHtml(company.phone)}</span>
+        <span>${escapeHtml(company.email)}</span>
+      </footer>
     </div>
   </section>
 </body>
@@ -391,7 +1004,11 @@ app.get("/health", async () => {
 });
 
 app.post("/proposals/:id/generate-pdf", async (request, reply) => {
+  app.log.info("USANDO TEMPLATE NOVO CARambolo PDF V2");
+  
   const { id } = request.params as { id: string };
+
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
   try {
     app.log.info({ proposalId: id }, "Iniciando geração de PDF");
@@ -431,7 +1048,8 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
 
     if (!items || items.length === 0) {
       return reply.status(400).send({
-        error: "Esta proposta não possui itens. Adicione serviços antes de gerar o PDF.",
+        error:
+          "Esta proposta não possui itens. Adicione serviços antes de gerar o PDF.",
       });
     }
 
@@ -441,7 +1059,7 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       items,
     });
 
-    const browser = await chromium.launch({
+    browser = await chromium.launch({
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
@@ -457,14 +1075,16 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       printBackground: true,
     });
 
-    await browser.close();
-
     const safeProposalNumber = String(proposal.proposal_number ?? id).replace(
       /[^a-zA-Z0-9-_]/g,
       "-",
     );
 
-    const fileName = `proposta-${safeProposalNumber}.pdf`;
+    const generatedAt = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-");
+
+    const fileName = `proposta-${safeProposalNumber}-${generatedAt}.pdf`;
 
     const { error: uploadError } = await supabase.storage
       .from("proposal-pdfs")
@@ -484,11 +1104,20 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       .from("proposal-pdfs")
       .getPublicUrl(fileName);
 
-    await supabase.from("proposal_files").insert({
-      proposal_id: id,
-      file_url: publicUrlData.publicUrl,
-      file_name: fileName,
-    });
+    const { error: fileRecordError } = await supabase
+      .from("proposal_files")
+      .insert({
+        proposal_id: id,
+        file_url: publicUrlData.publicUrl,
+        file_name: fileName,
+      });
+
+    if (fileRecordError) {
+      app.log.error(
+        { fileRecordError },
+        "PDF gerado, mas houve erro ao registrar arquivo",
+      );
+    }
 
     app.log.info({ proposalId: id, fileName }, "PDF gerado com sucesso");
 
@@ -505,6 +1134,10 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
           ? `Erro interno ao gerar PDF: ${error.message}`
           : "Erro interno ao gerar PDF.",
     });
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
   }
 });
 

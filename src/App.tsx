@@ -13,6 +13,7 @@ import { ServicesPage } from "./pages/ServicesPage";
 import { ProposalsPage } from "./pages/ProposalsPage";
 import { NewProposalPage } from "./pages/NewProposalPage";
 import { LoginPage } from "./pages/LoginPage";
+import { SettingsPage } from "./pages/SettingsPage";
 
 function RequireAuth({ children }: { children: ReactElement }) {
   const { session, loading } = useAuth();
@@ -49,6 +50,7 @@ function Layout() {
           <Link to="/servicos">Serviços</Link>
           <Link to="/propostas">Propostas</Link>
           <Link to="/propostas/nova">Nova proposta</Link>
+          <Link to="/configuracoes">Configurações</Link>
         </nav>
 
         <div className="absolute bottom-6 left-6 right-6">
@@ -72,6 +74,7 @@ function Layout() {
           <Route path="/servicos" element={<ServicesPage />} />
           <Route path="/propostas" element={<ProposalsPage />} />
           <Route path="/propostas/nova" element={<NewProposalPage />} />
+          <Route path="/configuracoes" element={<SettingsPage />} />
         </Routes>
       </main>
     </div>
