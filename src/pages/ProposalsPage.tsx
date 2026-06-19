@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import type { ProposalStatus } from "../types/database";
 import {
@@ -487,6 +488,13 @@ export function ProposalsPage() {
 
                   <td className="p-4">
                     <div className="flex flex-col gap-2">
+                      <Link
+                        to={`/propostas/${proposal.id}/editar`}
+                        className="rounded-xl bg-blue-600 px-4 py-2 text-center font-bold text-white"
+                      >
+                        Editar
+                      </Link>
+
                       <button
                         onClick={() => generatePdf(proposal.id)}
                         disabled={loadingPdfId === proposal.id}
