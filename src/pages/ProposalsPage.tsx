@@ -36,6 +36,16 @@ type PdfResponse = {
   error?: string;
 };
 
+type DuplicateResponse = {
+  proposal?: {
+    id: string;
+    proposal_number: string | null;
+    status: ProposalStatus;
+  };
+  itemsCount?: number;
+  error?: string;
+};
+
 function getApiUrl() {
   const envApiUrl = import.meta.env.VITE_API_URL;
 
@@ -134,6 +144,9 @@ export function ProposalsPage() {
   const [loadingWhatsappId, setLoadingWhatsappId] = useState<string | null>(
     null,
   );
+  const [loadingDuplicateId, setLoadingDuplicateId] = useState<string | null>(
+    null,
+  );
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
 
   async function loadProposals() {
@@ -215,14 +228,17 @@ export function ProposalsPage() {
       return null;
     }
 
-    const response = await fetch(`${apiUrl}/proposals/${proposalId}/generate-pdf`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
+    const response = await fetch(
+      `${apiUrl}/proposals/${proposalId}/generate-pdf`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({}),
       },
-      body: JSON.stringify({}),
-    });
+    );
 
     const contentType = response.headers.get("content-type");
 
@@ -301,6 +317,66 @@ export function ProposalsPage() {
       alert("Erro ao preparar mensagem de WhatsApp.");
     } finally {
       setLoadingWhatsappId(null);
+    }
+  }
+
+  async function duplicateProposal(proposal: ProposalRow) {
+    const apiUrl = getApiUrl();
+
+    if (!apiUrl) {
+      alert("VITE_API_URL não configurada.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Duplicar a proposta ${
+        proposal.proposal_number ?? "sem número"
+      } como novo rascunho?`,
+    );
+
+    if (!confirmed) return;
+
+    setLoadingDuplicateId(proposal.id);
+
+    try {
+      const response = await fetch(
+        `${apiUrl}/proposals/${proposal.id}/duplicate`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({}),
+        },
+      );
+
+      const contentType = response.headers.get("content-type");
+
+      const result: DuplicateResponse = contentType?.includes(
+        "application/json",
+      )
+        ? await response.json()
+        : { error: await response.text() };
+
+      if (!response.ok) {
+        console.error("Erro ao duplicar proposta:", result);
+        alert(result.error ?? "Erro ao duplicar proposta.");
+        return;
+      }
+
+      await loadProposals();
+
+      alert(
+        `Proposta duplicada com sucesso. Nova proposta: ${
+          result.proposal?.proposal_number ?? "sem número"
+        }.`,
+      );
+    } catch (error) {
+      console.error("Erro de conexão ao duplicar proposta:", error);
+      alert("Erro de conexão ao duplicar proposta.");
+    } finally {
+      setLoadingDuplicateId(null);
     }
   }
 
@@ -429,6 +505,16 @@ export function ProposalsPage() {
                         {loadingWhatsappId === proposal.id
                           ? "Preparando..."
                           : "WhatsApp"}
+                      </button>
+
+                      <button
+                        onClick={() => duplicateProposal(proposal)}
+                        disabled={loadingDuplicateId === proposal.id}
+                        className="rounded-xl bg-neutral-900 px-4 py-2 font-bold text-white disabled:opacity-60"
+                      >
+                        {loadingDuplicateId === proposal.id
+                          ? "Duplicando..."
+                          : "Duplicar"}
                       </button>
                     </div>
                   </td>

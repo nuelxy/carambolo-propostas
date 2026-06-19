@@ -1162,6 +1162,185 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
   }
 });
 
+function getTodayIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDaysToIsoDate(isoDate: string, days: number) {
+  const date = new Date(`${isoDate}T00:00:00`);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  date.setDate(date.getDate() + days);
+
+  return date.toISOString().slice(0, 10);
+}
+
+function getDaysBetweenIsoDates(startDate: string | null, endDate: string | null) {
+  if (!startDate || !endDate) {
+    return null;
+  }
+
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return null;
+  }
+
+  const diffInMilliseconds = end.getTime() - start.getTime();
+  const diffInDays = Math.round(diffInMilliseconds / (1000 * 60 * 60 * 24));
+
+  return diffInDays > 0 ? diffInDays : null;
+}
+
+function buildDuplicatedProposalNumber() {
+  const year = new Date().getFullYear();
+  return `CAR-${year}-${Date.now()}`;
+}
+
+app.post("/proposals/:id/duplicate", async (request, reply) => {
+  const { id } = request.params as { id: string };
+
+  try {
+    app.log.info({ proposalId: id }, "Iniciando duplicação de proposta");
+
+    const { data: originalProposal, error: proposalError } = await supabase
+      .from("proposals")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (proposalError || !originalProposal) {
+      app.log.error({ proposalError }, "Proposta original não encontrada");
+      return reply.status(404).send({
+        error: "Proposta original não encontrada.",
+      });
+    }
+
+    const { data: originalItems, error: itemsError } = await supabase
+      .from("proposal_items")
+      .select("*")
+      .eq("proposal_id", id)
+      .order("sort_order");
+
+    if (itemsError) {
+      app.log.error({ itemsError }, "Erro ao buscar itens da proposta original");
+      return reply.status(500).send({
+        error: "Erro ao buscar itens da proposta original.",
+      });
+    }
+
+    if (!originalItems || originalItems.length === 0) {
+      return reply.status(400).send({
+        error:
+          "Não é possível duplicar uma proposta sem itens. Adicione serviços antes de duplicar.",
+      });
+    }
+
+    const today = getTodayIsoDate();
+
+    const validityDays = getDaysBetweenIsoDates(
+      originalProposal.issue_date,
+      originalProposal.valid_until,
+    );
+
+    const duplicatedValidUntil =
+      validityDays !== null ? addDaysToIsoDate(today, validityDays) : null;
+
+    const duplicatedProposalNumber = buildDuplicatedProposalNumber();
+
+    const { data: duplicatedProposal, error: duplicatedProposalError } =
+      await supabase
+        .from("proposals")
+        .insert({
+          proposal_number: duplicatedProposalNumber,
+          client_id: originalProposal.client_id,
+          title: originalProposal.title ?? "Proposta de Orçamento",
+          issue_date: today,
+          valid_until: duplicatedValidUntil,
+          status: "draft",
+          subtotal: originalProposal.subtotal,
+          discount_type: originalProposal.discount_type,
+          discount_value: originalProposal.discount_value,
+          total: originalProposal.total,
+          down_payment: originalProposal.down_payment,
+          notes: originalProposal.notes,
+          updated_at: new Date().toISOString(),
+        })
+        .select("*")
+        .single();
+
+    if (duplicatedProposalError || !duplicatedProposal) {
+      app.log.error(
+        { duplicatedProposalError },
+        "Erro ao criar proposta duplicada",
+      );
+
+      return reply.status(500).send({
+        error:
+          duplicatedProposalError?.message ??
+          "Erro ao criar proposta duplicada.",
+      });
+    }
+
+    const duplicatedItems = originalItems.map((item: any, index: number) => ({
+      proposal_id: duplicatedProposal.id,
+      service_id: item.service_id,
+      service_name: item.service_name,
+      description: item.description,
+      quantity: item.quantity,
+      unit_price: item.unit_price,
+      total: item.total,
+      sort_order: item.sort_order ?? index,
+    }));
+
+    const { error: duplicatedItemsError } = await supabase
+      .from("proposal_items")
+      .insert(duplicatedItems);
+
+    if (duplicatedItemsError) {
+      app.log.error(
+        { duplicatedItemsError },
+        "Erro ao criar itens da proposta duplicada",
+      );
+
+      await supabase.from("proposals").delete().eq("id", duplicatedProposal.id);
+
+      return reply.status(500).send({
+        error:
+          duplicatedItemsError.message ??
+          "Erro ao criar itens da proposta duplicada.",
+      });
+    }
+
+    app.log.info(
+      {
+        originalProposalId: id,
+        duplicatedProposalId: duplicatedProposal.id,
+        duplicatedProposalNumber,
+      },
+      "Proposta duplicada com sucesso",
+    );
+
+    return {
+      proposal: duplicatedProposal,
+      itemsCount: duplicatedItems.length,
+    };
+  } catch (error) {
+    app.log.error({ error }, "Erro inesperado ao duplicar proposta");
+
+    return reply.status(500).send({
+      error:
+        error instanceof Error
+          ? `Erro interno ao duplicar proposta: ${error.message}`
+          : "Erro interno ao duplicar proposta.",
+    });
+  }
+});
+
 const port = Number(process.env.PORT ?? 3333);
 
 app.listen({ port, host: "0.0.0.0" }).catch((error) => {
