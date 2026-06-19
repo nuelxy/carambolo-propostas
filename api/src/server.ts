@@ -1004,8 +1004,8 @@ app.get("/health", async () => {
 });
 
 app.post("/proposals/:id/generate-pdf", async (request, reply) => {
-  app.log.info("USANDO TEMPLATE NOVO CARambolo PDF V2");
-  
+  app.log.info("USANDO TEMPLATE NOVO CARAMBOLO PDF V2");
+
   const { id } = request.params as { id: string };
 
   let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
@@ -1080,14 +1080,14 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       "-",
     );
 
-    const generatedAt = new Date()
-      .toISOString()
-      .replace(/[:.]/g, "-");
+    const generatedAt = new Date().toISOString().replace(/[:.]/g, "-");
 
     const fileName = `proposta-${safeProposalNumber}-${generatedAt}.pdf`;
 
+    const bucketName = "proposal-pdfs";
+
     const { error: uploadError } = await supabase.storage
-      .from("proposal-pdfs")
+      .from(bucketName)
       .upload(fileName, pdfBuffer, {
         contentType: "application/pdf",
         upsert: true,
@@ -1100,15 +1100,28 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       });
     }
 
-    const { data: publicUrlData } = supabase.storage
-      .from("proposal-pdfs")
-      .getPublicUrl(fileName);
+    const signedUrlExpiresInSeconds = 60 * 60 * 24 * 7;
+
+    const { data: signedUrlData, error: signedUrlError } =
+      await supabase.storage
+        .from(bucketName)
+        .createSignedUrl(fileName, signedUrlExpiresInSeconds);
+
+    if (signedUrlError || !signedUrlData?.signedUrl) {
+      app.log.error({ signedUrlError }, "Erro ao gerar link assinado do PDF");
+
+      return reply.status(500).send({
+        error:
+          signedUrlError?.message ??
+          "PDF salvo, mas houve erro ao gerar o link privado de acesso.",
+      });
+    }
 
     const { error: fileRecordError } = await supabase
       .from("proposal_files")
       .insert({
         proposal_id: id,
-        file_url: publicUrlData.publicUrl,
+        file_url: signedUrlData.signedUrl,
         file_name: fileName,
       });
 
@@ -1119,11 +1132,19 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       );
     }
 
-    app.log.info({ proposalId: id, fileName }, "PDF gerado com sucesso");
+    app.log.info(
+      {
+        proposalId: id,
+        fileName,
+        signedUrlExpiresInSeconds,
+      },
+      "PDF gerado com sucesso",
+    );
 
     return {
       fileName,
-      fileUrl: publicUrlData.publicUrl,
+      fileUrl: signedUrlData.signedUrl,
+      expiresInSeconds: signedUrlExpiresInSeconds,
     };
   } catch (error) {
     app.log.error({ error }, "Erro inesperado ao gerar PDF");

@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
+import type { ProposalStatus } from "../types/database";
+import {
+  getProposalStatusBadgeClassName,
+  getProposalStatusLabel,
+  isProposalStatus,
+  PROPOSAL_STATUS_OPTIONS,
+} from "../utils/proposalStatus";
 
 type ProposalClient = {
   name: string;
@@ -11,12 +18,13 @@ type ProposalRow = {
   id: string;
   proposal_number: string | null;
   issue_date: string;
-  status: string;
+  status: ProposalStatus;
   total: number;
   clients: ProposalClient | null;
 };
 
-type SupabaseProposalRow = Omit<ProposalRow, "clients"> & {
+type SupabaseProposalRow = Omit<ProposalRow, "clients" | "status"> & {
+  status: string | null;
   clients: ProposalClient | ProposalClient[] | null;
 };
 
@@ -25,15 +33,6 @@ type PdfResponse = {
   fileUrl?: string;
   error?: string;
 };
-
-const statusOptions = [
-  { value: "draft", label: "Rascunho" },
-  { value: "sent", label: "Enviada" },
-  { value: "negotiating", label: "Negociando" },
-  { value: "approved", label: "Aprovada" },
-  { value: "lost", label: "Perdida" },
-  { value: "completed", label: "Concluída" },
-];
 
 function getApiUrl() {
   const envApiUrl = import.meta.env.VITE_API_URL;
@@ -56,11 +55,31 @@ function formatCurrency(value: number) {
   });
 }
 
+function formatDate(date: string) {
+  return new Date(date).toLocaleDateString("pt-BR", {
+    timeZone: "UTC",
+  });
+}
+
+function normalizeProposalRow(proposal: SupabaseProposalRow): ProposalRow {
+  return {
+    ...proposal,
+    status: isProposalStatus(proposal.status) ? proposal.status : "draft",
+    clients: Array.isArray(proposal.clients)
+      ? proposal.clients[0] ?? null
+      : proposal.clients ?? null,
+  };
+}
+
 export function ProposalsPage() {
   const [proposals, setProposals] = useState<ProposalRow[]>([]);
+  const [loading, setLoading] = useState(true);
   const [loadingPdfId, setLoadingPdfId] = useState<string | null>(null);
+  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
 
   async function loadProposals() {
+    setLoading(true);
+
     const { data, error } = await supabase
       .from("proposals")
       .select(
@@ -82,26 +101,33 @@ export function ProposalsPage() {
     if (error) {
       console.error("Erro ao carregar propostas:", error);
       alert(`Erro ao carregar propostas: ${error.message}`);
+      setLoading(false);
       return;
     }
 
-    const normalizedData = (
-      (data ?? []) as unknown as SupabaseProposalRow[]
-    ).map((proposal) => ({
-      ...proposal,
-      clients: Array.isArray(proposal.clients)
-        ? proposal.clients[0] ?? null
-        : proposal.clients ?? null,
-    }));
+    const normalizedData = ((data ?? []) as unknown as SupabaseProposalRow[]).map(
+      normalizeProposalRow,
+    );
 
     setProposals(normalizedData);
+    setLoading(false);
   }
 
   useEffect(() => {
     loadProposals();
   }, []);
 
-  async function updateStatus(proposalId: string, status: string) {
+  async function updateStatus(proposalId: string, status: ProposalStatus) {
+    const previousProposals = proposals;
+
+    setUpdatingStatusId(proposalId);
+
+    setProposals((currentProposals) =>
+      currentProposals.map((proposal) =>
+        proposal.id === proposalId ? { ...proposal, status } : proposal,
+      ),
+    );
+
     const { error } = await supabase
       .from("proposals")
       .update({
@@ -112,11 +138,13 @@ export function ProposalsPage() {
 
     if (error) {
       console.error("Erro ao atualizar status:", error);
+      setProposals(previousProposals);
       alert(`Erro ao atualizar status: ${error.message}`);
+      setUpdatingStatusId(null);
       return;
     }
 
-    await loadProposals();
+    setUpdatingStatusId(null);
   }
 
   async function generatePdf(proposalId: string) {
@@ -192,59 +220,96 @@ export function ProposalsPage() {
           </thead>
 
           <tbody>
-            {proposals.map((proposal) => (
-              <tr key={proposal.id} className="border-b border-neutral-200">
-                <td className="p-4">{proposal.proposal_number}</td>
-
-                <td className="p-4">
-                  <strong>
-                    {proposal.clients?.name ?? "Cliente não localizado"}
-                  </strong>
-                  <p className="text-neutral-500">
-                    {proposal.clients?.city ?? "-"}
-                    {proposal.clients?.state
-                      ? `/${proposal.clients.state}`
-                      : ""}
-                  </p>
-                </td>
-
-                <td className="p-4">
-                  {new Date(proposal.issue_date).toLocaleDateString("pt-BR")}
-                </td>
-
-                <td className="p-4">
-                  <select
-                    className="rounded-xl border border-neutral-300 p-2"
-                    value={proposal.status}
-                    onChange={(event) =>
-                      updateStatus(proposal.id, event.target.value)
-                    }
-                  >
-                    {statusOptions.map((status) => (
-                      <option key={status.value} value={status.value}>
-                        {status.label}
-                      </option>
-                    ))}
-                  </select>
-                </td>
-
-                <td className="p-4 font-bold">
-                  {formatCurrency(proposal.total)}
-                </td>
-
-                <td className="p-4">
-                  <button
-                    onClick={() => generatePdf(proposal.id)}
-                    disabled={loadingPdfId === proposal.id}
-                    className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-black disabled:opacity-60"
-                  >
-                    {loadingPdfId === proposal.id ? "Gerando..." : "Gerar PDF"}
-                  </button>
+            {loading && (
+              <tr>
+                <td className="p-4 text-neutral-500" colSpan={6}>
+                  Carregando propostas...
                 </td>
               </tr>
-            ))}
+            )}
 
-            {proposals.length === 0 && (
+            {!loading &&
+              proposals.map((proposal) => (
+                <tr key={proposal.id} className="border-b border-neutral-200">
+                  <td className="p-4">
+                    <span className="font-medium">
+                      {proposal.proposal_number ?? "Sem número"}
+                    </span>
+                  </td>
+
+                  <td className="p-4">
+                    <strong>
+                      {proposal.clients?.name ?? "Cliente não localizado"}
+                    </strong>
+                    <p className="text-neutral-500">
+                      {proposal.clients?.city ?? "-"}
+                      {proposal.clients?.state
+                        ? `/${proposal.clients.state}`
+                        : ""}
+                    </p>
+                  </td>
+
+                  <td className="p-4">{formatDate(proposal.issue_date)}</td>
+
+                  <td className="p-4">
+                    <div className="flex flex-col gap-2">
+                      <span
+                        className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${getProposalStatusBadgeClassName(
+                          proposal.status,
+                        )}`}
+                      >
+                        {getProposalStatusLabel(proposal.status)}
+                      </span>
+
+                      <select
+                        className="w-fit rounded-xl border border-neutral-300 bg-white p-2"
+                        value={proposal.status}
+                        disabled={updatingStatusId === proposal.id}
+                        onChange={(event) => {
+                          const nextStatus = event.target.value;
+
+                          if (!isProposalStatus(nextStatus)) {
+                            alert("Status inválido.");
+                            return;
+                          }
+
+                          updateStatus(proposal.id, nextStatus);
+                        }}
+                      >
+                        {PROPOSAL_STATUS_OPTIONS.map((status) => (
+                          <option key={status.value} value={status.value}>
+                            {status.label}
+                          </option>
+                        ))}
+                      </select>
+
+                      {updatingStatusId === proposal.id && (
+                        <span className="text-xs text-neutral-500">
+                          Atualizando...
+                        </span>
+                      )}
+                    </div>
+                  </td>
+
+                  <td className="p-4 font-bold">
+                    {formatCurrency(proposal.total)}
+                  </td>
+
+                  <td className="p-4">
+                    <button
+                      onClick={() => generatePdf(proposal.id)}
+                      disabled={loadingPdfId === proposal.id}
+                      className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-black disabled:opacity-60"
+                    >
+                      {loadingPdfId === proposal.id
+                        ? "Gerando..."
+                        : "Gerar PDF"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+
+            {!loading && proposals.length === 0 && (
               <tr>
                 <td className="p-4 text-neutral-500" colSpan={6}>
                   Nenhuma proposta cadastrada.
