@@ -101,7 +101,7 @@ function buildProposalHtml(payload: any) {
     city: "Teresina",
   };
 
-  const itemPages = chunkItems(items ?? [], 6);
+  const itemPages = chunkItems(items ?? [], 3);
 
   function renderItemsRows(pageItems: any[]) {
     return pageItems
