@@ -102,19 +102,22 @@ function normalizeBrazilianPhone(phone: string | null | undefined) {
   return digits;
 }
 
-function buildWhatsappMessage(proposal: ProposalRow, fileUrl: string) {
+function buildWhatsappMessage(proposal: ProposalRow) {
   const clientName = proposal.clients?.name ?? "cliente";
+  const signalValue = proposal.total * 0.5;
 
   return [
     `Olá, ${clientName}.`,
     "",
-    "Segue a proposta do Carambolo Studio referente aos serviços solicitados.",
+    "Segue a proposta de orçamento do Carambolo Studio referente aos serviços solicitados.",
     "",
+    `Proposta: ${proposal.proposal_number ?? "sem número"}`,
     `Valor total: ${formatCurrency(proposal.total)}`,
-    "Para agendamento, o pagamento inicial é de 50%.",
+    `Sinal para reserva: ${formatCurrency(signalValue)}`,
     "",
-    "PDF da proposta:",
-    fileUrl,
+    "Estou enviando o PDF da proposta em anexo.",
+    "",
+    "Qualquer dúvida, fico à disposição.",
   ].join("\n");
 }
 
@@ -283,18 +286,14 @@ export function ProposalsPage() {
     setLoadingWhatsappId(proposal.id);
 
     try {
-      const result = await requestPdf(proposal.id);
-
-      if (!result?.fileUrl) return;
-
-      const message = buildWhatsappMessage(proposal, result.fileUrl);
+      const message = buildWhatsappMessage(proposal);
       const normalizedPhone = normalizeBrazilianPhone(proposal.clients?.phone);
 
       if (!normalizedPhone) {
         await copyToClipboard(message);
 
         alert(
-          "O cliente não possui telefone cadastrado. A mensagem foi copiada para a área de transferência.",
+          "O cliente não possui telefone cadastrado. A mensagem foi copiada para a área de transferência. Gere o PDF e anexe manualmente ao enviar.",
         );
 
         if (proposal.status !== "sent") {
@@ -511,7 +510,7 @@ export function ProposalsPage() {
                         className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white disabled:opacity-60"
                       >
                         {loadingWhatsappId === proposal.id
-                          ? "Preparando..."
+                          ? "Abrindo..."
                           : "WhatsApp"}
                       </button>
 
