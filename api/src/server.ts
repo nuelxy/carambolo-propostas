@@ -4,7 +4,7 @@ import path from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { createClient } from "@supabase/supabase-js";
-import { chromium } from "playwright";
+import { chromium, type Browser } from "playwright";
 
 const app = Fastify({ logger: true });
 
@@ -22,6 +22,79 @@ if (!supabaseUrl || !serviceRoleKey) {
 }
 
 const supabase = createClient(supabaseUrl, serviceRoleKey);
+
+
+/**
+ * Playwright browser singleton para geração de PDFs.
+ *
+ * Motivo: abrir um Chromium novo em cada requisição é uma das operações
+ * mais caras do endpoint de PDF. Mantemos uma única instância do browser
+ * viva enquanto o processo Node estiver ativo e fechamos apenas a página
+ * criada para cada PDF.
+ *
+ * Manutenção:
+ * - Nunca feche o browser dentro do endpoint de geração de PDF.
+ * - Feche apenas a page no finally.
+ * - Se o Chromium desconectar, a promise é zerada e a próxima requisição
+ *   cria uma nova instância automaticamente.
+ * - Em ambientes free/hibernáveis, a primeira requisição após cold start
+ *   ainda pode ser lenta; as seguintes tendem a ser mais rápidas.
+ */
+let pdfBrowserPromise: Promise<Browser> | null = null;
+
+function getPdfBrowser(): Promise<Browser> {
+  if (!pdfBrowserPromise) {
+    pdfBrowserPromise = chromium
+      .launch({
+        headless: true,
+        args: [
+          "--no-sandbox",
+          "--disable-setuid-sandbox",
+          "--disable-dev-shm-usage",
+          "--disable-gpu",
+        ],
+      })
+      .then((browser) => {
+        browser.on("disconnected", () => {
+          pdfBrowserPromise = null;
+        });
+
+        return browser;
+      })
+      .catch((error) => {
+        pdfBrowserPromise = null;
+        throw error;
+      });
+  }
+
+  return pdfBrowserPromise;
+}
+
+async function closePdfBrowser() {
+  if (!pdfBrowserPromise) return;
+
+  try {
+    const browser = await pdfBrowserPromise;
+
+    if (browser.isConnected()) {
+      await browser.close();
+    }
+  } finally {
+    pdfBrowserPromise = null;
+  }
+}
+
+process.once("SIGINT", () => {
+  closePdfBrowser()
+    .catch(() => undefined)
+    .finally(() => process.exit(0));
+});
+
+process.once("SIGTERM", () => {
+  closePdfBrowser()
+    .catch(() => undefined)
+    .finally(() => process.exit(0));
+});
 
 function escapeHtml(value: unknown) {
   return String(value ?? "")
@@ -101,7 +174,10 @@ function buildProposalHtml(payload: any) {
     city: "Teresina",
   };
 
-  const itemPages = chunkItems(items ?? [], 3);
+  // Limite operacional deliberado: no máximo 2 serviços por página.
+  // Isso evita que descrições longas forcem o Chromium a fragmentar a página
+  // e gerem páginas vazias, rodapés soltos ou blocos de resumo no topo.
+  const itemPages = chunkItems(items ?? [], 2);
 
   function renderItemsRows(pageItems: any[]) {
     return pageItems
@@ -128,10 +204,11 @@ function buildProposalHtml(payload: any) {
     pageIndex: number,
     totalPages: number,
   ) {
+    const isFirstBudgetPage = pageIndex === 0;
     const isLastBudgetPage = pageIndex === totalPages - 1;
 
     return `
-      <section class="page budget-page">
+      <section class="page budget-page ${isFirstBudgetPage ? "first-budget-page" : "continued-budget-page"}">
         <header class="document-header">
           <div class="brand-block">
             <img class="header-logo" src="${logoDataUrl}" alt="Carambolo Studio" />
@@ -148,24 +225,30 @@ function buildProposalHtml(payload: any) {
         </header>
 
         <main class="budget-content">
-          <section class="info-grid">
-            <div class="info-card company-card">
-              <p class="card-label">Contratada</p>
-              <h3>${escapeHtml(company.name)}</h3>
-              <p>CNPJ ${escapeHtml(company.cnpj)}</p>
-              <p>${escapeHtml(company.phone)}</p>
-              <p>${escapeHtml(company.email)}</p>
-              <p>${escapeHtml(company.instagram)}</p>
-            </div>
+          ${
+            isFirstBudgetPage
+              ? `
+                <section class="info-grid">
+                  <div class="info-card company-card">
+                    <p class="card-label">Contratada</p>
+                    <h3>${escapeHtml(company.name)}</h3>
+                    <p>CNPJ ${escapeHtml(company.cnpj)}</p>
+                    <p>${escapeHtml(company.phone)}</p>
+                    <p>${escapeHtml(company.email)}</p>
+                    <p>${escapeHtml(company.instagram)}</p>
+                  </div>
 
-            <div class="info-card client-card">
-              <p class="card-label">Cliente</p>
-              <h3>${escapeHtml(client.name)}</h3>
-              <p>${escapeHtml(client.city)} / ${escapeHtml(client.state)}</p>
-              ${client.phone ? `<p>${escapeHtml(client.phone)}</p>` : ""}
-              ${client.email ? `<p>${escapeHtml(client.email)}</p>` : ""}
-            </div>
-          </section>
+                  <div class="info-card client-card">
+                    <p class="card-label">Cliente</p>
+                    <h3>${escapeHtml(client.name)}</h3>
+                    <p>${escapeHtml(client.city)} / ${escapeHtml(client.state)}</p>
+                    ${client.phone ? `<p>${escapeHtml(client.phone)}</p>` : ""}
+                    ${client.email ? `<p>${escapeHtml(client.email)}</p>` : ""}
+                  </div>
+                </section>
+              `
+              : ""
+          }
 
           <section class="table-section">
             <div class="table-title-row">
@@ -205,8 +288,9 @@ function buildProposalHtml(payload: any) {
                   <div class="notes-box">
                     <p class="card-label">Observações</p>
                     <p>${escapeHtml(
-                      proposal.notes ??
-                        "Valores sujeitos à confirmação de agenda. A reserva da data ocorre mediante pagamento do sinal previsto nesta proposta.",
+                      proposal.notes && proposal.notes.trim()
+                        ? proposal.notes
+                        : "Valores sujeitos à confirmação de agenda. A reserva da data ocorre mediante pagamento do sinal previsto nesta proposta.",
                     )}</p>
                   </div>
 
@@ -283,16 +367,14 @@ function buildProposalHtml(payload: any) {
       padding: 0;
       font-family: Arial, Helvetica, sans-serif;
       color: #161616;
-      background: #ffffff;
+      background: #f7f3ea;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
 
     .page {
       width: 210mm;
-      height: 297mm;
       position: relative;
-      overflow: hidden;
       page-break-after: always;
     }
 
@@ -300,8 +382,15 @@ function buildProposalHtml(payload: any) {
       page-break-after: auto;
     }
 
+    .budget-page {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
     .cover-page,
     .payment-page {
+      height: 297mm;
+      overflow: hidden;
       background:
         radial-gradient(circle at 18% 15%, rgba(243, 175, 0, 0.20), transparent 28%),
         linear-gradient(135deg, #0f0f10 0%, #191919 45%, #0b0b0c 100%);
@@ -425,9 +514,13 @@ function buildProposalHtml(payload: any) {
     }
 
     .budget-page {
+      height: 297mm;
+      overflow: hidden;
       background: #f7f3ea;
-      padding: 16mm 18mm;
+      padding: 16mm 18mm 14mm;
       color: #151515;
+      display: flex;
+      flex-direction: column;
     }
 
     .document-header {
@@ -493,7 +586,9 @@ function buildProposalHtml(payload: any) {
     }
 
     .budget-content {
-      padding-top: 9mm;
+      padding-top: 8mm;
+      flex: 1;
+      min-height: 0;
     }
 
     .info-grid {
@@ -503,7 +598,7 @@ function buildProposalHtml(payload: any) {
     }
 
     .info-card {
-      background: #ffffff;
+      background: #f7f3ea;
       border: 1px solid rgba(21, 21, 21, 0.10);
       border-left: 3px solid #f3af00;
       padding: 6mm;
@@ -540,7 +635,15 @@ function buildProposalHtml(payload: any) {
     }
 
     .table-section {
-      margin-top: 9mm;
+      margin-top: 7mm;
+    }
+
+    .continued-budget-page .table-section {
+      margin-top: 0;
+    }
+
+    .continued-budget-page .budget-content {
+      padding-top: 9mm;
     }
 
     .table-title-row {
@@ -571,6 +674,20 @@ function buildProposalHtml(payload: any) {
       table-layout: fixed;
       background: #fff;
       border: 1px solid rgba(21, 21, 21, 0.16);
+      page-break-inside: auto;
+    }
+
+    thead {
+      display: table-header-group;
+    }
+
+    tbody {
+      display: table-row-group;
+    }
+
+    tr {
+      break-inside: avoid;
+      page-break-inside: avoid;
     }
 
     th {
@@ -592,7 +709,7 @@ function buildProposalHtml(payload: any) {
 
     th:nth-child(2),
     td:nth-child(2) {
-      width: 36%;
+      width: 42%;
     }
 
     th:nth-child(3),
@@ -605,17 +722,19 @@ function buildProposalHtml(payload: any) {
     td:nth-child(4),
     th:nth-child(5),
     td:nth-child(5) {
-      width: 17%;
+      width: 14%;
       text-align: right;
     }
 
     td {
-      padding: 4mm 3mm;
+      padding: 3.4mm 3mm;
       vertical-align: top;
       border-bottom: 1px solid rgba(21, 21, 21, 0.10);
       border-right: 1px solid rgba(21, 21, 21, 0.08);
       font-size: 10px;
       line-height: 1.35;
+      overflow-wrap: break-word;
+      word-break: normal;
     }
 
     tr:nth-child(even) td {
@@ -727,10 +846,9 @@ function buildProposalHtml(payload: any) {
     }
 
     .document-footer {
-      position: absolute;
-      left: 18mm;
-      right: 18mm;
-      bottom: 12mm;
+      position: static;
+      width: 100%;
+      margin-top: auto;
       display: flex;
       justify-content: space-between;
       gap: 6mm;
@@ -1004,11 +1122,9 @@ app.get("/health", async () => {
 });
 
 app.post("/proposals/:id/generate-pdf", async (request, reply) => {
-  app.log.info("USANDO TEMPLATE NOVO CARAMBOLO PDF V2");
-
+  app.log.info("USANDO TEMPLATE NOVO CARambolo PDF V2");
+  
   const { id } = request.params as { id: string };
-
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | null = null;
 
   try {
     app.log.info({ proposalId: id }, "Iniciando geração de PDF");
@@ -1059,35 +1175,44 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       items,
     });
 
-    browser = await chromium.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
-
+    const browser = await getPdfBrowser();
     const page = await browser.newPage();
 
-    await page.setContent(html, {
-      waitUntil: "networkidle",
-    });
+    let pdfBuffer: Buffer;
 
-    const pdfBuffer = await page.pdf({
-      format: "A4",
-      printBackground: true,
-    });
+    try {
+      await page.setContent(html, {
+        waitUntil: "networkidle",
+      });
+
+      pdfBuffer = await page.pdf({
+        format: "A4",
+        printBackground: true,
+        preferCSSPageSize: true,
+        margin: {
+          top: "0",
+          right: "0",
+          bottom: "0",
+          left: "0",
+        },
+      });
+    } finally {
+      await page.close();
+    }
 
     const safeProposalNumber = String(proposal.proposal_number ?? id).replace(
       /[^a-zA-Z0-9-_]/g,
       "-",
     );
 
-    const generatedAt = new Date().toISOString().replace(/[:.]/g, "-");
+    const generatedAt = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-");
 
     const fileName = `proposta-${safeProposalNumber}-${generatedAt}.pdf`;
 
-    const bucketName = "proposal-pdfs";
-
     const { error: uploadError } = await supabase.storage
-      .from(bucketName)
+      .from("proposal-pdfs")
       .upload(fileName, pdfBuffer, {
         contentType: "application/pdf",
         upsert: true,
@@ -1100,11 +1225,11 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
       });
     }
 
-    const signedUrlExpiresInSeconds = 60 * 60 * 24 * 7;
+    const signedUrlExpiresInSeconds = 60 * 60 * 24 * 365; // 1 ano de validade para o link
 
     const { data: signedUrlData, error: signedUrlError } =
       await supabase.storage
-        .from(bucketName)
+        .from("proposal-pdfs")
         .createSignedUrl(fileName, signedUrlExpiresInSeconds);
 
     if (signedUrlError || !signedUrlData?.signedUrl) {
@@ -1155,10 +1280,6 @@ app.post("/proposals/:id/generate-pdf", async (request, reply) => {
           ? `Erro interno ao gerar PDF: ${error.message}`
           : "Erro interno ao gerar PDF.",
     });
-  } finally {
-    if (browser) {
-      await browser.close();
-    }
   }
 });
 
