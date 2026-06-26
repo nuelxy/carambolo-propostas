@@ -1462,6 +1462,101 @@ app.post("/proposals/:id/duplicate", async (request, reply) => {
   }
 });
 
+app.delete("/proposals/:id", async (request, reply) => {
+  const { id } = request.params as { id: string };
+
+  try {
+    app.log.info({ proposalId: id }, "Iniciando exclusão de proposta");
+
+    const { data: proposal, error: proposalError } = await supabase
+      .from("proposals")
+      .select("id, proposal_number")
+      .eq("id", id)
+      .maybeSingle();
+
+    if (proposalError) {
+      app.log.error({ proposalError }, "Erro ao consultar proposta");
+      return reply.status(500).send({
+        error: `Erro ao consultar proposta: ${proposalError.message}`,
+      });
+    }
+
+    if (!proposal) {
+      return reply.status(404).send({
+        error: "Proposta não encontrada.",
+      });
+    }
+
+    const { data: deletedFiles, error: deleteError } = await supabase.rpc(
+      "delete_proposal_with_children",
+      {
+        p_proposal_id: id,
+      },
+    );
+
+    if (deleteError) {
+      app.log.error({ deleteError }, "Erro ao excluir proposta no banco");
+
+      return reply.status(500).send({
+        error:
+          deleteError.message ??
+          "Erro ao excluir proposta e registros vinculados.",
+      });
+    }
+
+    const fileNames = Array.from(
+      new Set(
+        ((deletedFiles ?? []) as Array<{ file_name: string | null }>)
+          .map((file) => file.file_name)
+          .filter((fileName): fileName is string => Boolean(fileName)),
+      ),
+    );
+
+    let storageWarning: string | null = null;
+
+    if (fileNames.length > 0) {
+      const { error: storageDeleteError } = await supabase.storage
+        .from("proposal-pdfs")
+        .remove(fileNames);
+
+      if (storageDeleteError) {
+        app.log.error(
+          { storageDeleteError, fileNames },
+          "Proposta excluída, mas houve erro ao remover PDFs do Storage",
+        );
+
+        storageWarning = storageDeleteError.message;
+      }
+    }
+
+    app.log.info(
+      {
+        proposalId: id,
+        proposalNumber: proposal.proposal_number,
+        deletedFilesCount: fileNames.length,
+        storageWarning,
+      },
+      "Proposta excluída com sucesso",
+    );
+
+    return {
+      ok: true,
+      proposalId: id,
+      deletedFilesCount: fileNames.length,
+      storageWarning,
+    };
+  } catch (error) {
+    app.log.error({ error }, "Erro inesperado ao excluir proposta");
+
+    return reply.status(500).send({
+      error:
+        error instanceof Error
+          ? `Erro interno ao excluir proposta: ${error.message}`
+          : "Erro interno ao excluir proposta.",
+    });
+  }
+});
+
 const port = Number(process.env.PORT ?? 3333);
 
 app.listen({ port, host: "0.0.0.0" }).catch((error) => {

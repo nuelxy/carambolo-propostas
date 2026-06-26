@@ -47,6 +47,14 @@ type DuplicateResponse = {
   error?: string;
 };
 
+type DeleteProposalResponse = {
+  ok?: boolean;
+  proposalId?: string;
+  deletedFilesCount?: number;
+  storageWarning?: string | null;
+  error?: string;
+};
+
 function getApiUrl() {
   const envApiUrl = import.meta.env.VITE_API_URL;
 
@@ -152,6 +160,12 @@ export function ProposalsPage() {
     null,
   );
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
+  const [openActionsId, setOpenActionsId] = useState<string | null>(null);
+  const [proposalPendingDeletion, setProposalPendingDeletion] =
+    useState<ProposalRow | null>(null);
+  const [deletingProposalId, setDeletingProposalId] = useState<string | null>(
+    null,
+  );
 
   async function loadProposals() {
     setLoading(true);
@@ -380,6 +394,75 @@ export function ProposalsPage() {
     }
   }
 
+  function openDeleteConfirmation(proposal: ProposalRow) {
+    setOpenActionsId(null);
+    setProposalPendingDeletion(proposal);
+  }
+
+  function closeDeleteConfirmation() {
+    if (deletingProposalId) return;
+
+    setProposalPendingDeletion(null);
+  }
+
+  async function confirmDeleteProposal() {
+    if (!proposalPendingDeletion || deletingProposalId) return;
+
+    const apiUrl = getApiUrl();
+
+    if (!apiUrl) {
+      alert("VITE_API_URL não configurada.");
+      return;
+    }
+
+    const proposalId = proposalPendingDeletion.id;
+
+    setDeletingProposalId(proposalId);
+
+    try {
+      const response = await fetch(`${apiUrl}/proposals/${proposalId}`, {
+        method: "DELETE",
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      const contentType = response.headers.get("content-type");
+
+      const result: DeleteProposalResponse = contentType?.includes(
+        "application/json",
+      )
+        ? await response.json()
+        : { error: await response.text() };
+
+      if (!response.ok) {
+        console.error("Erro ao excluir proposta:", result);
+        alert(result.error ?? "Erro ao excluir proposta.");
+        return;
+      }
+
+      setProposals((currentProposals) =>
+        currentProposals.filter((proposal) => proposal.id !== proposalId),
+      );
+
+      setProposalPendingDeletion(null);
+
+      if (result.storageWarning) {
+        alert(
+          `Proposta excluída, mas houve alerta ao remover PDF: ${result.storageWarning}`,
+        );
+        return;
+      }
+
+      alert("Proposta excluída com sucesso.");
+    } catch (error) {
+      console.error("Erro de conexão ao excluir proposta:", error);
+      alert("Erro de conexão ao excluir proposta.");
+    } finally {
+      setDeletingProposalId(null);
+    }
+  }
+
   return (
     <div>
       <div>
@@ -389,8 +472,8 @@ export function ProposalsPage() {
         </p>
       </div>
 
-      <div className="mt-8 overflow-hidden rounded-2xl bg-white shadow-sm">
-        <table className="w-full border-collapse text-left text-sm">
+      <div className="mt-8 overflow-x-auto rounded-2xl bg-white shadow-sm">
+        <table className="w-full min-w-[1100px] border-collapse text-left text-sm">
           <thead className="bg-neutral-950 text-white">
             <tr>
               <th className="p-4">Número</th>
@@ -398,7 +481,7 @@ export function ProposalsPage() {
               <th className="p-4">Data</th>
               <th className="p-4">Status</th>
               <th className="p-4">Total</th>
-              <th className="p-4">Ações</th>
+              <th className="p-4 text-right">Ações</th>
             </tr>
           </thead>
 
@@ -414,13 +497,13 @@ export function ProposalsPage() {
             {!loading &&
               proposals.map((proposal) => (
                 <tr key={proposal.id} className="border-b border-neutral-200">
-                  <td className="p-4">
+                  <td className="p-4 align-top">
                     <span className="font-medium">
                       {proposal.proposal_number ?? "Sem número"}
                     </span>
                   </td>
 
-                  <td className="p-4">
+                  <td className="p-4 align-top">
                     <strong>
                       {proposal.clients?.name ?? "Cliente não localizado"}
                     </strong>
@@ -439,9 +522,11 @@ export function ProposalsPage() {
                     )}
                   </td>
 
-                  <td className="p-4">{formatDate(proposal.issue_date)}</td>
+                  <td className="p-4 align-top">
+                    {formatDate(proposal.issue_date)}
+                  </td>
 
-                  <td className="p-4">
+                  <td className="p-4 align-top">
                     <div className="flex flex-col gap-2">
                       <span
                         className={`w-fit rounded-full px-3 py-1 text-xs font-bold ${getProposalStatusBadgeClassName(
@@ -481,48 +566,89 @@ export function ProposalsPage() {
                     </div>
                   </td>
 
-                  <td className="p-4 font-bold">
+                  <td className="p-4 align-top font-bold">
                     {formatCurrency(proposal.total)}
                   </td>
 
-                  <td className="p-4">
-                    <div className="flex flex-col gap-2">
-                      <Link
-                        to={`/propostas/${proposal.id}/editar`}
-                        className="rounded-xl bg-blue-600 px-4 py-2 text-center font-bold text-white"
-                      >
-                        Editar
-                      </Link>
+                  <td className="p-4 text-right align-top">
+                    <div className="flex min-w-[14rem] flex-col items-end gap-2">
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <Link
+                          to={`/propostas/${proposal.id}/editar`}
+                          className="rounded-xl bg-blue-600 px-4 py-2 text-center font-bold text-white"
+                        >
+                          Editar
+                        </Link>
 
-                      <button
-                        onClick={() => generatePdf(proposal.id)}
-                        disabled={loadingPdfId === proposal.id}
-                        className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-black disabled:opacity-60"
-                      >
-                        {loadingPdfId === proposal.id
-                          ? "Gerando..."
-                          : "Gerar PDF"}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => generatePdf(proposal.id)}
+                          disabled={loadingPdfId === proposal.id}
+                          className="rounded-xl bg-amber-500 px-4 py-2 font-bold text-black disabled:opacity-60"
+                        >
+                          {loadingPdfId === proposal.id
+                            ? "Gerando..."
+                            : "Gerar PDF"}
+                        </button>
+                      </div>
 
-                      <button
-                        onClick={() => sendWhatsapp(proposal)}
-                        disabled={loadingWhatsappId === proposal.id}
-                        className="rounded-xl bg-emerald-600 px-4 py-2 font-bold text-white disabled:opacity-60"
-                      >
-                        {loadingWhatsappId === proposal.id
-                          ? "Abrindo..."
-                          : "WhatsApp"}
-                      </button>
+                      <div className="w-full max-w-[14rem]">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setOpenActionsId((currentId) =>
+                              currentId === proposal.id ? null : proposal.id,
+                            )
+                          }
+                          className="w-full rounded-xl border border-neutral-300 bg-white px-4 py-2 font-bold text-neutral-800 hover:bg-neutral-50"
+                          aria-expanded={openActionsId === proposal.id}
+                        >
+                          Mais ações
+                        </button>
 
-                      <button
-                        onClick={() => duplicateProposal(proposal)}
-                        disabled={loadingDuplicateId === proposal.id}
-                        className="rounded-xl bg-neutral-900 px-4 py-2 font-bold text-white disabled:opacity-60"
-                      >
-                        {loadingDuplicateId === proposal.id
-                          ? "Duplicando..."
-                          : "Duplicar"}
-                      </button>
+                        {openActionsId === proposal.id && (
+                          <div className="mt-2 overflow-hidden rounded-xl border border-neutral-200 bg-white text-left shadow-sm">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionsId(null);
+                                sendWhatsapp(proposal);
+                              }}
+                              disabled={loadingWhatsappId === proposal.id}
+                              className="block w-full px-4 py-3 text-left font-semibold text-neutral-800 hover:bg-neutral-50 disabled:opacity-60"
+                            >
+                              {loadingWhatsappId === proposal.id
+                                ? "Abrindo..."
+                                : "WhatsApp"}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOpenActionsId(null);
+                                duplicateProposal(proposal);
+                              }}
+                              disabled={loadingDuplicateId === proposal.id}
+                              className="block w-full border-t border-neutral-200 px-4 py-3 text-left font-semibold text-neutral-800 hover:bg-neutral-50 disabled:opacity-60"
+                            >
+                              {loadingDuplicateId === proposal.id
+                                ? "Duplicando..."
+                                : "Duplicar"}
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => openDeleteConfirmation(proposal)}
+                              disabled={deletingProposalId === proposal.id}
+                              className="block w-full border-t border-neutral-200 px-4 py-3 text-left font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
+                            >
+                              {deletingProposalId === proposal.id
+                                ? "Excluindo..."
+                                : "Excluir proposta"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </td>
                 </tr>
@@ -538,6 +664,55 @@ export function ProposalsPage() {
           </tbody>
         </table>
       </div>
+
+      {proposalPendingDeletion && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-proposal-title"
+          onClick={closeDeleteConfirmation}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3 id="delete-proposal-title" className="text-xl font-bold">
+              Excluir proposta
+            </h3>
+
+            <p className="mt-3 text-neutral-700">
+              Você tem certeza que deseja excluir esta proposta?
+            </p>
+
+            <p className="mt-2 text-sm text-neutral-500">
+              {proposalPendingDeletion.proposal_number ?? "Proposta sem número"}
+            </p>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeDeleteConfirmation}
+                disabled={deletingProposalId === proposalPendingDeletion.id}
+                className="rounded-xl border border-neutral-300 px-4 py-2 font-semibold text-neutral-800 disabled:opacity-60"
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={confirmDeleteProposal}
+                disabled={deletingProposalId === proposalPendingDeletion.id}
+                className="rounded-xl bg-red-600 px-4 py-2 font-semibold text-white disabled:opacity-60"
+              >
+                {deletingProposalId === proposalPendingDeletion.id
+                  ? "Excluindo..."
+                  : "Sim, excluir"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
