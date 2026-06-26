@@ -18,6 +18,7 @@ export function NewProposalPage() {
   const [clientId, setClientId] = useState("");
   const [items, setItems] = useState<SelectedItem[]>([]);
   const [discountValue, setDiscountValue] = useState(0);
+  const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
   async function loadData() {
@@ -176,6 +177,7 @@ export function NewProposalPage() {
         discount_value: discountValue,
         total,
         down_payment: downPayment,
+        notes: notes.trim() || null,
       })
       .select("*")
       .single();
@@ -214,6 +216,7 @@ export function NewProposalPage() {
     setClientId("");
     setItems([]);
     setDiscountValue(0);
+    setNotes("");
     setSaving(false);
   }
 
@@ -462,6 +465,19 @@ export function NewProposalPage() {
               </div>
             </div>
           )}
+
+          <div className="mt-8 border-t border-neutral-200 pt-8">
+            <h3 className="text-xl font-bold">Observações</h3>
+            <p className="mt-1 text-sm text-neutral-500">
+              Este texto será exibido no PDF da proposta comercial, logo acima do valor total.
+            </p>
+            <textarea
+              className="mt-4 min-h-24 w-full rounded-xl border border-neutral-300 p-3 text-sm focus:border-neutral-950 focus:ring-1 focus:ring-neutral-950"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="Ex.: CPF: 000.000.000-00. Estilo musical: MPB. Valores sujeitos à confirmação de agenda..."
+            />
+          </div>
         </section>
 
         <aside className="h-fit rounded-2xl bg-neutral-950 p-6 text-white shadow-sm">

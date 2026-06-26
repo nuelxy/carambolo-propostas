@@ -67,6 +67,7 @@ export function EditProposalPage() {
   const [clientId, setClientId] = useState("");
   const [items, setItems] = useState<SelectedItem[]>([]);
   const [discountValue, setDiscountValue] = useState(0);
+  const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -155,6 +156,7 @@ export function EditProposalPage() {
     });
     setClientId(loadedProposal.client_id ?? "");
     setDiscountValue(Number(loadedProposal.discount_value ?? 0));
+    setNotes(loadedProposal.notes ?? "");
     setClients((clientsResponse.data ?? []) as Client[]);
     setServices(loadedServices);
     setItems(loadedItems);
@@ -317,23 +319,27 @@ export function EditProposalPage() {
       return;
     }
 
-    if (proposal?.status !== "draft") {
-      const { error: statusError } = await supabase
-        .from("proposals")
-        .update({
-          status: "draft",
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", id);
+    const updateData: any = {
+      notes: notes.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
 
-      if (statusError) {
-        console.error("Erro ao retornar status para rascunho:", statusError);
-        alert(
-          "A proposta foi atualizada, mas houve erro ao retornar o status para Rascunho.",
-        );
-        setSaving(false);
-        return;
-      }
+    if (proposal?.status !== "draft") {
+      updateData.status = "draft";
+    }
+
+    const { error: updateError } = await supabase
+      .from("proposals")
+      .update(updateData)
+      .eq("id", id);
+
+    if (updateError) {
+      console.error("Erro ao atualizar observações/status:", updateError);
+      alert(
+        "A proposta foi atualizada, mas houve erro ao salvar observações/status.",
+      );
+      setSaving(false);
+      return;
     }
 
     alert("Proposta atualizada com sucesso.");
@@ -618,6 +624,19 @@ export function EditProposalPage() {
               </div>
             </div>
           )}
+
+          <div className="mt-8 border-t border-neutral-200 pt-8">
+            <h3 className="text-xl font-bold">Observações</h3>
+            <p className="mt-1 text-sm text-neutral-500">
+              Este texto será exibido no PDF da proposta comercial, logo acima do valor total.
+            </p>
+            <textarea
+              className="mt-4 min-h-24 w-full rounded-xl border border-neutral-300 p-3 text-sm focus:border-neutral-950 focus:ring-1 focus:ring-neutral-950"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="Ex.: CPF: 000.000.000-00. Estilo musical: MPB. Valores sujeitos à confirmação de agenda..."
+            />
+          </div>
         </section>
 
         <aside className="h-fit rounded-2xl bg-neutral-950 p-6 text-white shadow-sm">
